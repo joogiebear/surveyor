@@ -11,6 +11,7 @@ import java.sql.Statement;
 import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -57,6 +58,25 @@ public final class Database implements AutoCloseable {
                 throw new IllegalStateException("database failed to start", e);
             }
         }, executor);
+    }
+
+    /** Runs a task on the database thread. Tasks queue behind {@link #open}, so order is preserved. */
+    public <T> CompletableFuture<T> submit(SqlTask<T> task) {
+        return CompletableFuture.supplyAsync(() -> {
+            if (connection == null) {
+                throw new IllegalStateException("database is not available");
+            }
+            try {
+                return task.run(connection);
+            } catch (SQLException e) {
+                throw new CompletionException(e);
+            }
+        }, executor);
+    }
+
+    @FunctionalInterface
+    public interface SqlTask<T> {
+        T run(Connection connection) throws SQLException;
     }
 
     private int migrate() throws SQLException, IOException {

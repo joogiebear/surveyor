@@ -1,10 +1,13 @@
 package xyz.joogiebear.surveyor.paper;
 
+import java.util.EnumMap;
+import java.util.Map;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 import xyz.joogiebear.surveyor.core.Limits;
+import xyz.joogiebear.surveyor.core.region.Flag;
 
-record Settings(boolean mcpEnabled, Limits limits, String storageFile) {
+record Settings(boolean mcpEnabled, Limits limits, String storageFile, Map<Flag, Boolean> defaults) {
 
     static Settings load(JavaPlugin plugin) {
         YamlConfiguration yaml = ConfigFiles.load(plugin, "config.yml");
@@ -20,6 +23,14 @@ record Settings(boolean mcpEnabled, Limits limits, String storageFile) {
         if (file == null || file.isBlank()) {
             throw new IllegalArgumentException("storage.file must not be empty");
         }
-        return new Settings(yaml.getBoolean("server.enabled"), limits, file);
+        Map<Flag, Boolean> defaults = new EnumMap<>(Flag.class);
+        for (Flag flag : Flag.values()) {
+            String value = yaml.getString("defaults." + flag.key());
+            if (!"allow".equalsIgnoreCase(value) && !"deny".equalsIgnoreCase(value)) {
+                throw new IllegalArgumentException("defaults." + flag.key() + " must be allow or deny, got " + value);
+            }
+            defaults.put(flag, "allow".equalsIgnoreCase(value));
+        }
+        return new Settings(yaml.getBoolean("server.enabled"), limits, file, Map.copyOf(defaults));
     }
 }

@@ -2,6 +2,7 @@ package xyz.joogiebear.surveyor.paper;
 
 import static net.kyori.adventure.text.minimessage.tag.resolver.Placeholder.unparsed;
 
+import java.util.Arrays;
 import java.util.List;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -9,26 +10,34 @@ import org.bukkit.command.TabExecutor;
 
 final class SvCommand implements TabExecutor {
 
-    private static final String PERMISSION = "surveyor.admin";
-    private static final List<String> SUBCOMMANDS = List.of("status", "reload");
+    private static final String ADMIN = "surveyor.admin";
+    private static final String REGION = "surveyor.region.manage";
 
     private final SurveyorPlugin plugin;
+    private final RegionCommand regionCommand;
 
     SvCommand(SurveyorPlugin plugin) {
         this.plugin = plugin;
+        this.regionCommand = new RegionCommand(plugin);
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         Messages messages = plugin.messages();
-        if (!sender.hasPermission(PERMISSION)) {
+        String sub = args.length == 0 ? "" : args[0].toLowerCase();
+        String needed = switch (sub) {
+            case "status", "reload" -> ADMIN;
+            case "region" -> REGION;
+            default -> null;
+        };
+        if (needed != null && !sender.hasPermission(needed)) {
             sender.sendMessage(messages.get("no-permission"));
             return true;
         }
-        String sub = args.length == 0 ? "" : args[0].toLowerCase();
         switch (sub) {
             case "status" -> status(sender, messages);
             case "reload" -> plugin.reload(sender);
+            case "region" -> regionCommand.run(sender, label, Arrays.copyOfRange(args, 1, args.length));
             default -> sender.sendMessage(messages.get("usage", unparsed("label", label)));
         }
         return true;
@@ -36,6 +45,8 @@ final class SvCommand implements TabExecutor {
 
     private void status(CommandSender sender, Messages messages) {
         String mcp = messages.raw(plugin.settings().mcpEnabled() ? "status.mcp-on" : "status.mcp-off");
+        String regions = plugin.regions().loaded()
+                ? String.valueOf(plugin.regions().snapshot().size()) : messages.raw("status.regions-not-loaded");
         sender.sendMessage(messages.get("status.version", unparsed("version", plugin.getPluginMeta().getVersion())));
         sender.sendMessage(messages.get("status.server",
                 unparsed("software", plugin.getServer().getName()),
@@ -43,14 +54,21 @@ final class SvCommand implements TabExecutor {
         sender.sendMessage(messages.get("status.folia",
                 unparsed("folia", messages.raw(plugin.folia() ? "answer-yes" : "answer-no"))));
         sender.sendMessage(messages.get("status.database", unparsed("database", plugin.database().status())));
+        sender.sendMessage(messages.get("status.regions", unparsed("regions", regions)));
         sender.sendMessage(messages.get("status.mcp", unparsed("mcp", mcp)));
     }
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (!sender.hasPermission(PERMISSION) || args.length != 1) {
-            return List.of();
+        String last = args[args.length - 1].toLowerCase();
+        if (args.length == 1) {
+            return List.of("status", "reload", "region").stream()
+                    .filter(s -> s.startsWith(last) && sender.hasPermission(s.equals("region") ? REGION : ADMIN))
+                    .toList();
         }
-        return SUBCOMMANDS.stream().filter(s -> s.startsWith(args[0].toLowerCase())).toList();
+        if (args[0].equalsIgnoreCase("region") && sender.hasPermission(REGION)) {
+            return regionCommand.complete(sender, Arrays.copyOfRange(args, 1, args.length));
+        }
+        return List.of();
     }
 }

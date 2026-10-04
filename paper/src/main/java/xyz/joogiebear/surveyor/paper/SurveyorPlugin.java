@@ -9,12 +9,14 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Entity;
 import org.bukkit.plugin.java.JavaPlugin;
 import xyz.joogiebear.surveyor.paper.storage.Database;
+import xyz.joogiebear.surveyor.paper.storage.RegionStore;
 
 public final class SurveyorPlugin extends JavaPlugin {
 
     private volatile Settings settings;
     private volatile Messages messages;
     private Database database;
+    private RegionStore regions;
     private boolean folia;
 
     @Override
@@ -34,15 +36,23 @@ public final class SurveyorPlugin extends JavaPlugin {
         folia = detectFolia();
 
         database = new Database();
+        regions = new RegionStore(database);
         Path file = getDataFolder().toPath().resolve(settings.storageFile());
-        database.open(file).whenComplete((ignored, error) -> {
-            if (error != null) {
-                getLogger().severe("Database failed to start: " + error.getCause().getMessage());
-            } else {
-                getLogger().info("Database " + database.status());
-            }
-        });
+        database.open(file)
+                .thenCompose(ignored -> {
+                    getLogger().info("Database " + database.status());
+                    return regions.load();
+                })
+                .whenComplete((count, error) -> {
+                    if (error != null) {
+                        getLogger().severe("Storage failed to start, region protection is not active: "
+                                + (error.getCause() != null ? error.getCause().getMessage() : error.getMessage()));
+                    } else {
+                        getLogger().info("Loaded " + count + " regions");
+                    }
+                });
 
+        getServer().getPluginManager().registerEvents(new ProtectionListener(new Protection(this, regions)), this);
         getCommand("sv").setExecutor(new SvCommand(this));
         getLogger().info("Surveyor " + getPluginMeta().getVersion() + " enabled on "
                 + getServer().getName() + (folia ? " (Folia)" : ""));
@@ -65,6 +75,10 @@ public final class SurveyorPlugin extends JavaPlugin {
 
     Database database() {
         return database;
+    }
+
+    RegionStore regions() {
+        return regions;
     }
 
     boolean folia() {

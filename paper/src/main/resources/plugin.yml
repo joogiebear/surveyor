@@ -11,9 +11,15 @@ libraries:
 commands:
   sv:
     description: Surveyor root command
-    usage: /<command> <status|reload>
+    usage: /<command> <status|reload|region>
 
 permissions:
   surveyor.admin:
     description: Run /sv status and /sv reload
+    default: op
+  surveyor.region.manage:
+    description: Create, change and delete regions with /sv region
+    default: op
+  surveyor.bypass.region:
+    description: Ignore region protection. Every override is written to the audit log.
     default: op

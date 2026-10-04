@@ -30,7 +30,10 @@ Clean-room: see `CLAUDE.md`. This design is original.
 1. Get the wand (`/sv wand`), left/right click blocks to set position 1 and 2 (or `/sv pos1`,
    `/sv pos2`).
 2. Run `/sv set <pattern>`, `/sv replace <from> <to>`, `/sv copy`, `/sv paste`, `/sv undo`.
-3. Claim land: `/sv region create <name>` from the selection, then manage members and flags.
+3. Claim land: `/sv region create <name> <x1> <y1> <z1> <x2> <y2> <z2>` (`~` is the player's own
+   position; from the console name the region `world:name`). A plain `create <name>` from the
+   selection arrives with selections in milestone 3. The creator becomes an owner. Then manage
+   members and flags. Any `<name>` argument accepts `world:name` for another world.
 4. Every action is checked against permissions, region rights and limits. Denials explain why.
 
 ### 3.2 Admin
@@ -59,6 +62,11 @@ clashing with other plugins.
 | `/sv undo [operationId]` | `surveyor.edit.undo` |
 | `/sv region create/delete/info/list` | `surveyor.region.manage` |
 | `/sv region addmember/removemember/owner/flag/priority` | `surveyor.region.manage` |
+
+Syntax: `flag <region> <flag> <allow|deny|clear> [everyone|members|owners|non-members]`,
+`addmember|removemember|owner <region> <player>` (player must have joined before),
+`priority <region> <number>`, `list [world]`. Holding `surveyor.region.manage` lets you change any
+region; owner-scoped management is not in v1.
 | `/sv agent token create/list/revoke/scope` | `surveyor.agent.admin` |
 | `/sv audit` | `surveyor.audit` |
 | `/sv status`, `/sv reload` | `surveyor.admin` |
@@ -74,6 +82,26 @@ clashing with other plugins.
 - Unflagged regions fall back to `defaults.*` in config.
 - Region lookups must be O(log n) or better per world (spatial index in `core`) because they run
   on block-break and block-place events.
+
+Resolution (implemented in `core`, `FlagResolver`):
+- A flag value speaks only for actors in its audience; for anyone else that region is transparent.
+  Owners count as `members`. An event with no player (a mob spawn) counts as `non-members`.
+- Among the values that apply, the highest `priority` wins; at equal priority deny beats allow.
+- If none applies, `defaults.<flag>` decides. Region names are 1-32 characters of `A-Za-z0-9_-`
+  and unique per world, case-insensitively.
+- Index: regions are bucketed by 16x16 column (hash lookup). Regions covering more than 1024
+  columns go in a short list scanned on every lookup, so the worst case is linear in the number
+  of such huge regions.
+- Changes are written to SQLite first and applied to the in-memory registry after; readers use an
+  immutable snapshot and never block. Until regions have loaded, `build` and `interact` are
+  denied for everyone without the bypass permission.
+
+Enforced events (v1): block break and place, bucket empty and fill (`build`); block right-click,
+physical triggers and entity right-click (`interact`, except sneak-placing a block); player damage
+by a player or their projectile (`pvp`); creature spawns except custom, command and egg spawns
+(`mob-spawning`); crossing into a region by movement or teleport (`entry`; a player already
+inside is never trapped). Not covered yet: explosions, pistons, fire, fluid flow, tree and mushroom
+growth, vehicles, hanging entities, and non-player damage.
 
 ## 6. Editing
 
