@@ -9,6 +9,7 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Entity;
 import org.bukkit.plugin.java.JavaPlugin;
 import xyz.joogiebear.surveyor.paper.storage.Database;
+import xyz.joogiebear.surveyor.paper.storage.EditStore;
 import xyz.joogiebear.surveyor.paper.storage.RegionStore;
 
 public final class SurveyorPlugin extends JavaPlugin {
@@ -17,6 +18,7 @@ public final class SurveyorPlugin extends JavaPlugin {
     private volatile Messages messages;
     private Database database;
     private RegionStore regions;
+    private EditService edits;
     private boolean folia;
 
     @Override
@@ -37,6 +39,7 @@ public final class SurveyorPlugin extends JavaPlugin {
 
         database = new Database();
         regions = new RegionStore(database);
+        edits = new EditService(this, new EditStore(database));
         Path file = getDataFolder().toPath().resolve(settings.storageFile());
         database.open(file)
                 .thenCompose(ignored -> {
@@ -49,10 +52,15 @@ public final class SurveyorPlugin extends JavaPlugin {
                                 + (error.getCause() != null ? error.getCause().getMessage() : error.getMessage()));
                     } else {
                         getLogger().info("Loaded " + count + " regions");
+                        edits.recover().exceptionally(failure -> {
+                            getLogger().severe("Could not check for interrupted edits: " + failure.getMessage());
+                            return null;
+                        });
                     }
                 });
 
         getServer().getPluginManager().registerEvents(new ProtectionListener(new Protection(this, regions)), this);
+        getServer().getPluginManager().registerEvents(new EditListener(this), this);
         getCommand("sv").setExecutor(new SvCommand(this));
         getLogger().info("Surveyor " + getPluginMeta().getVersion() + " enabled on "
                 + getServer().getName() + (folia ? " (Folia)" : ""));
@@ -60,6 +68,9 @@ public final class SurveyorPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (edits != null) {
+            edits.shutdown();
+        }
         if (database != null) {
             database.close();
         }
@@ -79,6 +90,10 @@ public final class SurveyorPlugin extends JavaPlugin {
 
     RegionStore regions() {
         return regions;
+    }
+
+    EditService edits() {
+        return edits;
     }
 
     boolean folia() {

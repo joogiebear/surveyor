@@ -11,7 +11,7 @@ libraries:
 commands:
   sv:
     description: Surveyor root command
-    usage: /<command> <status|reload|region>
+    usage: /<command> <status|reload|region|wand|pos1|pos2|sel|set|replace|copy|paste|undo|cancel>
 
 permissions:
   surveyor.admin:
@@ -22,4 +22,16 @@ permissions:
     default: op
   surveyor.bypass.region:
     description: Ignore region protection. Every override is written to the audit log.
+    default: op
+  surveyor.edit.select:
+    description: Use the selection wand and /sv wand, pos1, pos2 and sel
+    default: op
+  surveyor.edit.modify:
+    description: Change blocks with /sv set and /sv replace, and cancel your own edits
+    default: op
+  surveyor.edit.clipboard:
+    description: Copy and paste with /sv copy and /sv paste
+    default: op
+  surveyor.edit.undo:
+    description: Undo your own edits with /sv undo
     default: op

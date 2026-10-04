@@ -18,4 +18,8 @@ public record Limits(int maxBlocksPerOperation, int tickBudgetMs, int maxConcurr
             throw new IllegalArgumentException("limits.max-concurrent-operations must be at least 1");
         }
     }
+
+    public boolean exceeds(long blocks) {
+        return blocks > maxBlocksPerOperation;
+    }
 }

@@ -28,11 +28,13 @@ Clean-room: see `CLAUDE.md`. This design is original.
 
 ### 3.1 Player
 1. Get the wand (`/sv wand`), left/right click blocks to set position 1 and 2 (or `/sv pos1`,
-   `/sv pos2`).
-2. Run `/sv set <pattern>`, `/sv replace <from> <to>`, `/sv copy`, `/sv paste`, `/sv undo`.
+   `/sv pos2`). `/sv sel` shows the selection, `/sv sel clear` drops it.
+2. Run `/sv set <pattern>`, `/sv replace <from> <to>`, `/sv copy`, `/sv paste`, `/sv undo
+   [operationId]`, `/sv cancel [operationId]`. `set`, `replace` and `paste` also accept a trailing
+   `strict`.
 3. Claim land: `/sv region create <name> <x1> <y1> <z1> <x2> <y2> <z2>` (`~` is the player's own
-   position; from the console name the region `world:name`). A plain `create <name>` from the
-   selection arrives with selections in milestone 3. The creator becomes an owner. Then manage
+   position; from the console name the region `world:name`). `create <name>` alone uses the
+   player's selection in their world. The creator becomes an owner. Then manage
    members and flags. Any `<name>` argument accepts `world:name` for another world.
 4. Every action is checked against permissions, region rights and limits. Denials explain why.
 
@@ -57,11 +59,14 @@ clashing with other plugins.
 | Command | Permission |
 |---|---|
 | `/sv wand`, `pos1`, `pos2`, `sel` | `surveyor.edit.select` |
-| `/sv set`, `replace` | `surveyor.edit.modify` |
+| `/sv set`, `replace`, `cancel` | `surveyor.edit.modify` |
 | `/sv copy`, `paste` | `surveyor.edit.clipboard` |
 | `/sv undo [operationId]` | `surveyor.edit.undo` |
 | `/sv region create/delete/info/list` | `surveyor.region.manage` |
 | `/sv region addmember/removemember/owner/flag/priority` | `surveyor.region.manage` |
+
+Undo and cancel act on the actor's own operations; acting on someone else's needs
+`surveyor.admin`. All `surveyor.edit.*` permissions default to op.
 
 Syntax: `flag <region> <flag> <allow|deny|clear> [everyone|members|owners|non-members]`,
 `addmember|removemember|owner <region> <player>` (player must have joined before),
@@ -105,17 +110,57 @@ growth, vehicles, hanging entities, and non-player damage.
 
 ## 6. Editing
 
-- Selection: two positions, per actor, per world.
+- Selection: two positions, per actor, per world. Held in memory; dropped when the player quits.
+- Wand: a wooden axe tagged with persistent data (`surveyor:wand`), given by `/sv wand`. Left click
+  a block is position 1, right click is position 2; the click is cancelled. Needs
+  `surveyor.edit.select`; without it the axe is an ordinary axe.
 - Operations (v1): `set`, `replace`, `copy`, `paste`, `undo`. Redo is post-v1.
-- Patterns: a block type with optional weights (`50%stone,50%andesite`), defined in this spec's
-  own syntax (document it in the README when final).
-- Execution: plan off-thread into per-chunk batches, apply each batch on the owning region
-  scheduler within `limits.tick-budget-ms`, record the previous state of every changed block into
-  the undo journal before applying it.
-- Protection: every changed position is checked against regions and the actor's scope. Positions
-  that fail are skipped and counted in `skipped`; with `strict: true` the whole operation fails
-  before applying anything.
-- Cancel: `operation.cancel` stops further batches; already applied batches stay undoable.
+- Patterns: comma separated block types with optional weights, `stone` or `50%stone,50%andesite`.
+  Weights are positive whole numbers, relative to each other (they need not add up to 100), and are
+  given for every entry or for none (then equal). A block may carry a state in brackets,
+  `oak_stairs[facing=north]`; commas inside brackets do not split. Block names are the server's own
+  block ids. `replace <from> <to>`: `from` is a comma separated block list without weights; a plain
+  type matches in any state, a type with a bracketed state must match that state. Document in the
+  README when final.
+- Block state: block data (facing, waterlogged, ...) is kept by copy, paste and undo. Tile entity
+  contents (chests, signs, spawners, banners) are not: they are lost when overwritten and are not
+  restored by undo.
+- Clipboard: one per player, in memory only, lost on quit or restart. Size is capped by
+  `limits.max-blocks-per-operation`. It stores the copied box and where it sat relative to the
+  block the player stood on; paste puts that same relationship back at the player's current block.
+  No rotation or flip in v1. Air is part of the copy.
+- Execution: plan off-thread into per-chunk batches (at most 4096 blocks, split by height), then
+  work through the batches one at a time. For each batch, on the region scheduler that owns the
+  chunk: scan it in slices, commit its previous block data to the undo journal, then apply it in
+  slices. Every slice stops at `limits.tick-budget-ms` and continues on the next tick. Blocks are
+  set without physics updates. The journal row is stored before any block of its batch changes.
+  The area is cut to the world's build height; its size is checked against
+  `limits.max-blocks-per-operation` and `limits.max-concurrent-operations` is enforced.
+- Protection: every changed position is checked against regions (`build` flag) before it is
+  journaled and again just before it is applied. Positions that fail are skipped and counted in
+  `skipped.protected`; only blocks that would actually change are counted. With `strict`, the
+  whole area is checked first and the operation fails with nothing applied if any position in it
+  is protected (including positions a `replace` would not have touched). Actor scope joins this
+  check in milestone 4. `surveyor.bypass.region` skips the checks and writes one `bypass.edit`
+  audit row per operation that would otherwise have been denied something.
+- Undo journal: one `undo_journal` row per batch: a palette of block data strings plus one entry per
+  changed block (x and z in the chunk, y, palette index), gzipped. `seq` is the batch number.
+  `/sv undo [operationId]` replays the rows into the world in reverse order, through the same
+  scheduling and protection checks. Without an id it takes the actor's newest operation that
+  changed blocks and has not been undone. An operation is marked undone (`operations.undone_by`)
+  only if nothing was skipped; otherwise it can be undone again. Undoing an old operation after a
+  newer one touched the same blocks restores the old state over the newer one. Undo is not itself
+  journaled (no redo).
+- Cancel: `/sv cancel [operationId]` (agents: `operation.cancel`) stops further batches; batches
+  already applied stay undoable.
+- Status: `planned` (row written, planning), `running`, then `done`, `failed` or `cancelled`.
+  `copy` is tracked like the others but changes nothing and has no journal.
+- Shutdown: new batches stop and running operations are recorded as `cancelled`. Region tasks stop
+  with the plugin, so a batch in the middle of being applied may be left partly applied; its
+  journal row is already stored, so undo restores it exactly.
+- Crash recovery: at startup, operations still `planned` or `running` are set to `failed`, a
+  warning lists their ids, and players with `surveyor.admin` get a notice when they join. Whatever
+  they changed can be restored with `/sv undo <id>`.
 
 ## 7. Agent interface
 
@@ -214,14 +259,16 @@ All writes happen off the region threads. Schema is versioned with forward-only 
 - `region_flags(region_id, flag, value, audience)`
 - `agent_tokens(id, name, secret_hash, scope_json, created_by, created_at, expires_at, revoked_at)`
 - `operations(id, actor_type, actor_id, kind, world, status, params_json, reason, blocks_changed,
-  created_at, finished_at)`
+  created_at, finished_at, undone_by)` ids look like `op_` plus 14 base 36 characters that sort in
+  creation order
 - `undo_journal(operation_id, chunk_x, chunk_z, seq, data)` previous block states per chunk batch
 - `audit_log(id, at, actor_type, actor_id, action, target, operation_id, result)`
 
 Undo journal writes for a batch are committed before that batch is applied to the world.
 
 Migration 1 (`001_baseline.sql`) creates all the tables above. The runner owns `schema_version`.
-Later schema changes are new numbered migrations; a database newer than the plugin is refused.
+Migration 2 (`002_undo_marker.sql`) adds `operations.undone_by` and an index on
+`operations(actor_type, actor_id, created_at)`. Later schema changes are new numbered migrations; a database newer than the plugin is refused.
 
 ## 10. Milestones
 

@@ -26,6 +26,13 @@ class LimitsTest {
     }
 
     @Test
+    void exceedsOnlyAboveTheBlockCap() {
+        Limits limits = new Limits(1000, 8, 4);
+        assertEquals(false, limits.exceeds(1000));
+        assertEquals(true, limits.exceeds(1001));
+    }
+
+    @Test
     void concurrentOperationsMustBePositive() {
         assertThrows(IllegalArgumentException.class, () -> new Limits(1000, 8, 0));
     }

@@ -14,6 +14,10 @@ public record Cuboid(int minX, int minY, int minZ, int maxX, int maxY, int maxZ)
                 Math.max(x1, x2), Math.max(y1, y2), Math.max(z1, z2));
     }
 
+    public long volume() {
+        return ((long) maxX - minX + 1) * ((long) maxY - minY + 1) * ((long) maxZ - minZ + 1);
+    }
+
     public boolean contains(int x, int y, int z) {
         return x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ;
     }

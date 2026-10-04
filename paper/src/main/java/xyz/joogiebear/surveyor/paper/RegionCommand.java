@@ -71,7 +71,7 @@ final class RegionCommand {
 
     private void create(CommandSender sender, String label, String[] args) {
         Messages messages = plugin.messages();
-        if (args.length != 8) {
+        if (args.length != 8 && args.length != 2) {
             usage(sender, label, "create");
             return;
         }
@@ -87,6 +87,28 @@ final class RegionCommand {
             sender.sendMessage(messages.get("error.unknown-world", unparsed("world", ref.world())));
             return;
         }
+        Cuboid bounds = args.length == 2 ? fromSelection(sender, ref.world()) : fromCoordinates(sender, args);
+        if (bounds == null) {
+            return;
+        }
+        UUID owner = sender instanceof Player p ? p.getUniqueId() : null;
+        done(sender, plugin.regions().create(ref.world(), ref.name(), bounds, owner), "region.created");
+    }
+
+    private Cuboid fromSelection(CommandSender sender, String world) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(plugin.messages().get("error.selection-needs-player"));
+            return null;
+        }
+        Cuboid bounds = plugin.edits().selections().get(player.getUniqueId(), world).cuboid().orElse(null);
+        if (bounds == null) {
+            sender.sendMessage(plugin.messages().get("error.no-selection"));
+        }
+        return bounds;
+    }
+
+    private Cuboid fromCoordinates(CommandSender sender, String[] args) {
+        Messages messages = plugin.messages();
         int[] base = sender instanceof Player p
                 ? new int[] {p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ()}
                 : null;
@@ -96,19 +118,17 @@ final class RegionCommand {
             boolean relative = token.startsWith("~");
             if (relative && base == null) {
                 sender.sendMessage(messages.get("error.relative-needs-player"));
-                return;
+                return null;
             }
             try {
                 int offset = relative && token.length() > 1 ? Integer.parseInt(token.substring(1)) : relative ? 0 : Integer.parseInt(token);
                 c[i] = relative ? base[i % 3] + offset : offset;
             } catch (NumberFormatException e) {
                 sender.sendMessage(messages.get("error.bad-number", unparsed("value", token)));
-                return;
+                return null;
             }
         }
-        UUID owner = sender instanceof Player p ? p.getUniqueId() : null;
-        done(sender, plugin.regions().create(ref.world(), ref.name(), Cuboid.of(c[0], c[1], c[2], c[3], c[4], c[5]), owner),
-                "region.created");
+        return Cuboid.of(c[0], c[1], c[2], c[3], c[4], c[5]);
     }
 
     private void info(CommandSender sender, Region region) {
