@@ -1,0 +1,11 @@
+build/
+.gradle/
+out/
+.idea/
+*.iml
+.vscode/
+
+# Local tooling, not part of the plugin
+.claude/
+CLAUDE.md
+scripts/

@@ -1,0 +1,19 @@
+name: Surveyor
+version: '${version}'
+main: xyz.joogiebear.surveyor.paper.SurveyorPlugin
+api-version: '26.2'
+folia-supported: true
+authors: [joogiebear]
+description: Region protection and world editing for players and AI agents.
+libraries:
+  - org.xerial:sqlite-jdbc:3.53.4.0
+
+commands:
+  sv:
+    description: Surveyor root command
+    usage: /<command> <status|reload>
+
+permissions:
+  surveyor.admin:
+    description: Run /sv status and /sv reload
+    default: op

@@ -1,0 +1,25 @@
+server:
+  enabled: true
+  bind: 127.0.0.1
+  port: 8765
+  allow-remote: false
+limits:
+  max-blocks-per-operation: 250000
+  tick-budget-ms: 8
+  max-concurrent-operations: 4
+agents:
+  default-rate-limit-per-minute: 30
+  require-reason: true
+storage:
+  type: sqlite
+  file: surveyor.db
+undo:
+  retention-days: 14
+audit:
+  retention-days: 90
+defaults:
+  build: allow
+  interact: allow
+  pvp: allow
+  mob-spawning: allow
+  entry: allow

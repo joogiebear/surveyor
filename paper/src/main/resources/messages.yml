@@ -1,0 +1,18 @@
+# MiniMessage formatting. Placeholders are written <name>.
+prefix: "<gray>[<aqua>Surveyor</aqua>]</gray> "
+no-permission: "<red>You do not have permission to do that."
+usage: "<yellow>Usage: /<label> <status|reload>"
+reload:
+  success: "<green>Configuration and messages reloaded."
+  failed: "<red>Reload failed, keeping the previous settings: <reason>"
+  storage-changed: "<yellow>The storage settings changed. Restart the server to apply them."
+answer-yes: "yes"
+answer-no: "no"
+status:
+  mcp-on: "enabled in config (server not built yet)"
+  mcp-off: "disabled in config"
+  version: "<gray>Plugin: <white><version>"
+  server: "<gray>Server: <white><software> <server_version>"
+  folia: "<gray>Folia: <white><folia>"
+  database: "<gray>Database: <white><database>"
+  mcp: "<gray>MCP server: <white><mcp>"
