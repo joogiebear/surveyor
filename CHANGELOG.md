@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 - 2026-10-04
 
 - Project skeleton: Gradle modules (`core`, `paper`, `mcp`), Folia-supported `plugin.yml`.
 - SQLite storage (WAL) loaded through Paper's library loader, with forward-only migrations.
