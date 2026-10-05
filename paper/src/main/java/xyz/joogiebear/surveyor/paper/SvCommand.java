@@ -18,6 +18,8 @@ final class SvCommand implements TabExecutor {
     private static final String MODIFY = "surveyor.edit.modify";
     private static final String CLIPBOARD = "surveyor.edit.clipboard";
     private static final String UNDO = "surveyor.edit.undo";
+    private static final String AGENT = "surveyor.agent.admin";
+    private static final String AUDIT = "surveyor.audit";
 
     private static final Map<String, String> PERMISSIONS = new LinkedHashMap<>();
 
@@ -25,6 +27,8 @@ final class SvCommand implements TabExecutor {
         PERMISSIONS.put("status", ADMIN);
         PERMISSIONS.put("reload", ADMIN);
         PERMISSIONS.put("region", REGION);
+        PERMISSIONS.put("agent", AGENT);
+        PERMISSIONS.put("audit", AUDIT);
         for (String sub : List.of("wand", "pos1", "pos2", "sel")) {
             PERMISSIONS.put(sub, SELECT);
         }
@@ -39,11 +43,13 @@ final class SvCommand implements TabExecutor {
     private final SurveyorPlugin plugin;
     private final RegionCommand regionCommand;
     private final EditCommand editCommand;
+    private final AgentCommand agentCommand;
 
     SvCommand(SurveyorPlugin plugin) {
         this.plugin = plugin;
         this.regionCommand = new RegionCommand(plugin);
         this.editCommand = new EditCommand(plugin);
+        this.agentCommand = new AgentCommand(plugin);
     }
 
     @Override
@@ -59,6 +65,8 @@ final class SvCommand implements TabExecutor {
             case "status" -> status(sender, messages);
             case "reload" -> plugin.reload(sender);
             case "region" -> regionCommand.run(sender, label, Arrays.copyOfRange(args, 1, args.length));
+            case "agent" -> agentCommand.run(sender, label, Arrays.copyOfRange(args, 1, args.length));
+            case "audit" -> agentCommand.audit(sender, label, Arrays.copyOfRange(args, 1, args.length));
             default -> {
                 if (needed != null) {
                     editCommand.run(sender, label, args);
@@ -71,7 +79,10 @@ final class SvCommand implements TabExecutor {
     }
 
     private void status(CommandSender sender, Messages messages) {
-        String mcp = messages.raw(plugin.settings().mcpEnabled() ? "status.mcp-on" : "status.mcp-off");
+        String address = plugin.mcpAddress();
+        String mcp = address != null ? messages.raw("status.mcp-listening").replace("<address>", address)
+                : plugin.mcpFailure() != null ? messages.raw("status.mcp-failed").replace("<reason>", plugin.mcpFailure())
+                : messages.raw(plugin.settings().mcpEnabled() ? "status.mcp-starting" : "status.mcp-off");
         String regions = plugin.regions().loaded()
                 ? String.valueOf(plugin.regions().snapshot().size()) : messages.raw("status.regions-not-loaded");
         sender.sendMessage(messages.get("status.version", unparsed("version", plugin.getPluginMeta().getVersion())));
@@ -95,6 +106,9 @@ final class SvCommand implements TabExecutor {
         }
         if (args[0].equalsIgnoreCase("region") && sender.hasPermission(REGION)) {
             return regionCommand.complete(sender, Arrays.copyOfRange(args, 1, args.length));
+        }
+        if (args[0].equalsIgnoreCase("agent") && sender.hasPermission(AGENT)) {
+            return agentCommand.complete(Arrays.copyOfRange(args, 1, args.length));
         }
         String needed = PERMISSIONS.get(args[0].toLowerCase());
         if (needed != null && EditCommand.SUBCOMMANDS.contains(args[0].toLowerCase()) && sender.hasPermission(needed)) {

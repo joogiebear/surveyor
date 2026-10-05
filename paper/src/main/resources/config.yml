@@ -17,6 +17,7 @@ undo:
   retention-days: 14
 audit:
   retention-days: 90
+  log-dry-runs: false
 defaults:
   build: allow
   interact: allow

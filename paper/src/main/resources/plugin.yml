@@ -11,11 +11,17 @@ libraries:
 commands:
   sv:
     description: Surveyor root command
-    usage: /<command> <status|reload|region|wand|pos1|pos2|sel|set|replace|copy|paste|undo|cancel>
+    usage: /<command> <status|reload|region|agent|audit|wand|pos1|pos2|sel|set|replace|copy|paste|undo|cancel>
 
 permissions:
   surveyor.admin:
     description: Run /sv status and /sv reload
+    default: op
+  surveyor.agent.admin:
+    description: Create, scope and revoke agent tokens with /sv agent
+    default: op
+  surveyor.audit:
+    description: Read the audit log with /sv audit
     default: op
   surveyor.region.manage:
     description: Create, change and delete regions with /sv region

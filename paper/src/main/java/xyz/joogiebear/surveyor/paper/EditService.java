@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,15 +17,19 @@ import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Player;
 import xyz.joogiebear.surveyor.core.edit.BlockPos;
+import xyz.joogiebear.surveyor.core.agent.AgentScope;
 import xyz.joogiebear.surveyor.core.edit.Clipboard;
 import xyz.joogiebear.surveyor.core.edit.EditGuard;
 import xyz.joogiebear.surveyor.core.edit.JournalCodec;
 import xyz.joogiebear.surveyor.core.edit.OperationGate;
 import xyz.joogiebear.surveyor.core.edit.OperationStatus;
 import xyz.joogiebear.surveyor.core.edit.RegionGuard;
+import xyz.joogiebear.surveyor.core.edit.ScopeGuard;
 import xyz.joogiebear.surveyor.core.edit.Selection;
 import xyz.joogiebear.surveyor.core.edit.Selections;
+import xyz.joogiebear.surveyor.core.region.Cuboid;
 import xyz.joogiebear.surveyor.core.region.Flag;
+import xyz.joogiebear.surveyor.core.region.Region;
 import xyz.joogiebear.surveyor.paper.storage.EditStore;
 
 /**
@@ -46,8 +49,8 @@ final class EditService {
     private final EditStore store;
     private final OperationGate gate = new OperationGate();
     private final Map<String, EditJob> active = new ConcurrentHashMap<>();
-    private final Map<UUID, Clipboard> clipboards = new ConcurrentHashMap<>();
-    private final Selections<UUID> selections = new Selections<>();
+    private final Map<Object, Clipboard> clipboards = new ConcurrentHashMap<>();
+    private final Selections<Object> selections = new Selections<>();
     private final Executor async;
     private volatile boolean stopping;
     private volatile List<String> interrupted = List.of();
@@ -58,12 +61,16 @@ final class EditService {
         this.async = task -> plugin.getServer().getAsyncScheduler().runNow(plugin, scheduled -> task.run());
     }
 
-    Selections<UUID> selections() {
+    Selections<Object> selections() {
         return selections;
     }
 
     EditStore store() {
         return store;
+    }
+
+    Executor async() {
+        return async;
     }
 
     /** Sets one corner of the player's selection in a world and tells them. */
@@ -76,17 +83,17 @@ final class EditService {
                 unparsed("z", String.valueOf(pos.z())), unparsed("size", size)));
     }
 
-    Clipboard clipboard(UUID player) {
-        return clipboards.get(player);
+    Clipboard clipboard(Object actorKey) {
+        return clipboards.get(actorKey);
     }
 
-    void setClipboard(UUID player, Clipboard clipboard) {
-        clipboards.put(player, clipboard);
+    void setClipboard(Object actorKey, Clipboard clipboard) {
+        clipboards.put(actorKey, clipboard);
     }
 
-    void forget(UUID player) {
-        selections.forget(player);
-        clipboards.remove(player);
+    void forget(Object actorKey) {
+        selections.forget(actorKey);
+        clipboards.remove(actorKey);
     }
 
     List<String> interrupted() {
@@ -117,12 +124,14 @@ final class EditService {
             return "edit.error.busy";
         }
         active.put(job.id, job);
-        store.insert(job.id, "player", job.actorId.toString(), job.kind, job.world.getName(), job.params())
+        store.insert(new EditStore.NewOperation(job.id, job.actor.type(), job.actor.id(), job.kind, job.world.getName(),
+                        job.params(), job.reason, job.planned >= 0 ? job.planned : job.area() == null ? 0 : job.area().volume(),
+                        regionNamesJson(regionsAffected(job.world.getName(), job.area()))))
                 .thenCompose(ignored -> job.prepare(store))
                 .thenAcceptAsync(ignored -> precheck(job), async)
                 .thenCompose(ignored -> {
                     job.state.moveTo(OperationStatus.RUNNING);
-                    return store.setStatus(job.id, OperationStatus.RUNNING, 0);
+                    return store.setStatus(job.id, OperationStatus.RUNNING, job.state);
                 })
                 .thenAccept(ignored -> proceed(job, 0))
                 .exceptionally(error -> {
@@ -146,10 +155,26 @@ final class EditService {
         return active.get(id);
     }
 
-    /** The player's newest unfinished job, or null. Ids sort in creation order. */
-    EditJob latestActive(UUID player) {
-        return active.values().stream().filter(job -> job.actorId.equals(player))
+    /** The actor's newest unfinished job, or null. Ids sort in creation order. */
+    EditJob latestActive(Actor actor) {
+        return active.values().stream().filter(job -> sameActor(job.actor, actor))
                 .max(Comparator.comparing(job -> job.id)).orElse(null);
+    }
+
+    /** Asks every unfinished job of an actor to stop, as when a token is revoked. @return how many were asked */
+    int cancelAll(Actor actor) {
+        int asked = 0;
+        for (EditJob job : active.values()) {
+            if (sameActor(job.actor, actor)) {
+                job.state.requestCancel();
+                asked++;
+            }
+        }
+        return asked;
+    }
+
+    static boolean sameActor(Actor a, Actor b) {
+        return a.type().equals(b.type()) && a.id().equals(b.id());
     }
 
     /** Called from onDisable. Region tasks stop with the plugin, so record what is still running as cancelled. */
@@ -159,7 +184,7 @@ final class EditService {
         for (EditJob job : active.values()) {
             job.state.requestCancel();
             if (job.state.moveTo(OperationStatus.CANCELLED)) {
-                writes.add(store.setStatus(job.id, OperationStatus.CANCELLED, job.state.changed()));
+                writes.add(store.setStatus(job.id, OperationStatus.CANCELLED, job.state));
             }
         }
         try {
@@ -173,7 +198,7 @@ final class EditService {
         if (!job.guarded() || job.area() == null) {
             return;
         }
-        long denied = regionGuard(job).countDenied(job.area());
+        long denied = guardFor(job.actor, job.world.getName(), false).countDenied(job.area());
         if (denied == 0) {
             return;
         }
@@ -195,6 +220,7 @@ final class EditService {
         }
         int cx = job.chunkX(unit);
         int cz = job.chunkZ(unit);
+        holdChunk(job, cx, cz);
         job.world.getChunkAtAsync(cx, cz, true).whenComplete((chunk, error) -> {
             if (error != null || chunk == null) {
                 fail(job, error != null ? error : new IllegalStateException("chunk " + cx + "," + cz + " could not be loaded"));
@@ -204,13 +230,48 @@ final class EditService {
         });
     }
 
-    private EditGuard regionGuard(EditJob job) {
-        return new RegionGuard(plugin.regions().snapshot(), job.world.getName(), job.actorId,
+    /** Token scope first, then region rights. A bypassing actor is not limited by either. */
+    EditGuard guardFor(Actor actor, String world, boolean bypass) {
+        if (bypass) {
+            return EditGuard.ALLOW_ALL;
+        }
+        EditGuard regions = new RegionGuard(plugin.regions().snapshot(), world, actor.regionIdentity(),
                 plugin.settings().defaults().get(Flag.BUILD));
+        AgentScope scope = actor.scope();
+        return scope == null ? regions : new ScopeGuard(scope, world, regions);
+    }
+
+    /** Names of the regions whose bounds overlap the area. */
+    List<String> regionsAffected(String world, Cuboid area) {
+        if (area == null) {
+            return List.of();
+        }
+        return plugin.regions().snapshot().list(world).stream()
+                .filter(region -> region.bounds().intersects(area)).map(Region::name).toList();
+    }
+
+    private static String regionNamesJson(List<String> names) {
+        return "[" + String.join(",", names.stream().map(name -> "\"" + name + "\"").toList()) + "]";
     }
 
     private EditGuard guard(EditJob job) {
-        return job.bypass ? EditGuard.ALLOW_ALL : regionGuard(job);
+        return guardFor(job.actor, job.world.getName(), job.bypass);
+    }
+
+    // A chunk that was only loaded, with no player near it, is not part of a ticking region, and the
+    // region scheduler never runs a task for it. The ticket makes it one for as long as the unit needs.
+    private void holdChunk(EditJob job, int chunkX, int chunkZ) {
+        releaseChunk(job);
+        job.world.addPluginChunkTicket(chunkX, chunkZ, plugin);
+        job.heldChunk = new int[] {chunkX, chunkZ};
+    }
+
+    private void releaseChunk(EditJob job) {
+        int[] held = job.heldChunk;
+        job.heldChunk = null;
+        if (held != null) {
+            job.world.removePluginChunkTicket(held[0], held[1], plugin);
+        }
     }
 
     private void fail(EditJob job, Throwable error) {
@@ -236,7 +297,8 @@ final class EditService {
         if (!job.state.moveTo(status)) {
             return;
         }
-        store.setStatus(job.id, status, job.state.changed()).whenComplete((ignored, error) -> {
+        releaseChunk(job);
+        store.setStatus(job.id, status, job.state).whenComplete((ignored, error) -> {
             if (error != null) {
                 plugin.getLogger().severe("Could not record the end of edit " + job.id + ": " + error);
             }
@@ -260,17 +322,17 @@ final class EditService {
             resolvers.add(unparsed("id", job.id));
             resolvers.add(unparsed("changed", String.valueOf(job.state.changed())));
             resolvers.add(unparsed("skipped", String.valueOf(job.state.skippedProtected())));
-            plugin.reply(job.player, plugin.messages().get(messageKey,
+            job.actor.tell(plugin, plugin.messages().get(messageKey,
                     resolvers.toArray(new TagResolver[0])));
             if (job.state.skippedProtected() > 0 && status == OperationStatus.DONE) {
-                plugin.reply(job.player, plugin.messages().get("edit.skipped-protected",
+                job.actor.tell(plugin, plugin.messages().get("edit.skipped-protected",
                         unparsed("skipped", String.valueOf(job.state.skippedProtected()))));
             }
         });
     }
 
     private void audit(EditJob job, String action, String target, String result) {
-        store.audit("player", job.actorId.toString(), action, target, job.id, result).exceptionally(error -> {
+        store.audit(job.actor.type(), job.actor.id(), action, target, job.id, result, job.reason).exceptionally(error -> {
             plugin.getLogger().warning("Could not write audit row for " + job.id + ": " + error.getMessage());
             return null;
         });
@@ -327,7 +389,8 @@ final class EditService {
         private int cursor;
         private int applied;
         private int changed;
-        private long skipped;
+        private long skippedProtected;
+        private long skippedOutOfScope;
 
         UnitRun(EditJob job, int unit, int chunkX, int chunkZ) {
             this.job = job;
@@ -364,10 +427,11 @@ final class EditService {
                 BlockData old = job.world.getBlockAt(x, y, z).getBlockData();
                 BlockData next = job.visit(unit, index, x, y, z, old);
                 if (next != null && !next.equals(old)) {
-                    if (!job.guarded() || guard.allows(x, y, z)) {
-                        pending.add(new Change(x, y, z, next, journaled ? old.getAsString() : null));
-                    } else {
-                        skipped++;
+                    EditGuard.Denial denial = job.guarded() ? guard.check(x, y, z) : EditGuard.Denial.NONE;
+                    switch (denial) {
+                        case NONE -> pending.add(new Change(x, y, z, next, journaled ? old.getAsString() : null));
+                        case PROTECTED -> skippedProtected++;
+                        case OUT_OF_SCOPE -> skippedOutOfScope++;
                     }
                 }
                 if (cursor % CLOCK_INTERVAL == 0 && System.nanoTime() >= deadline) {
@@ -382,7 +446,8 @@ final class EditService {
         }
 
         private void scanned() {
-            job.state.addSkippedProtected(skipped);
+            job.state.addSkippedProtected(skippedProtected);
+            job.state.addSkippedOutOfScope(skippedOutOfScope);
             if (pending.isEmpty()) {
                 proceed(job, unit + 1);
                 return;
@@ -409,8 +474,11 @@ final class EditService {
             long deadline = System.nanoTime() + budgetNanos();
             while (applied < pending.size()) {
                 Change change = pending.get(applied++);
-                if (job.guarded() && !fresh.allows(change.x, change.y, change.z)) {
+                EditGuard.Denial denial = job.guarded() ? fresh.check(change.x, change.y, change.z) : EditGuard.Denial.NONE;
+                if (denial == EditGuard.Denial.PROTECTED) {
                     job.state.addSkippedProtected(1);
+                } else if (denial == EditGuard.Denial.OUT_OF_SCOPE) {
+                    job.state.addSkippedOutOfScope(1);
                 } else {
                     job.world.getBlockAt(change.x, change.y, change.z).setBlockData(change.next, false);
                     changed++;

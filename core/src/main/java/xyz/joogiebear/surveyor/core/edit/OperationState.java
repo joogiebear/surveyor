@@ -9,6 +9,7 @@ public final class OperationState {
     private final AtomicReference<OperationStatus> status = new AtomicReference<>(OperationStatus.PLANNED);
     private final AtomicLong changed = new AtomicLong();
     private final AtomicLong skippedProtected = new AtomicLong();
+    private final AtomicLong skippedOutOfScope = new AtomicLong();
     private volatile boolean cancelRequested;
 
     public OperationStatus status() {
@@ -43,11 +44,19 @@ public final class OperationState {
         skippedProtected.addAndGet(blocks);
     }
 
+    public void addSkippedOutOfScope(long blocks) {
+        skippedOutOfScope.addAndGet(blocks);
+    }
+
     public long changed() {
         return changed.get();
     }
 
     public long skippedProtected() {
         return skippedProtected.get();
+    }
+
+    public long skippedOutOfScope() {
+        return skippedOutOfScope.get();
     }
 }

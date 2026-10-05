@@ -2,12 +2,18 @@ package xyz.joogiebear.surveyor.paper;
 
 import static net.kyori.adventure.text.minimessage.tag.resolver.Placeholder.unparsed;
 
+import java.io.IOException;
+import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.CompletableFuture;
 import net.kyori.adventure.text.Component;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Entity;
 import org.bukkit.plugin.java.JavaPlugin;
+import xyz.joogiebear.surveyor.core.agent.BindPolicy;
+import xyz.joogiebear.surveyor.mcp.McpHttpServer;
+import xyz.joogiebear.surveyor.paper.storage.AgentStore;
 import xyz.joogiebear.surveyor.paper.storage.Database;
 import xyz.joogiebear.surveyor.paper.storage.EditStore;
 import xyz.joogiebear.surveyor.paper.storage.RegionStore;
@@ -19,6 +25,9 @@ public final class SurveyorPlugin extends JavaPlugin {
     private Database database;
     private RegionStore regions;
     private EditService edits;
+    private AgentApi agents;
+    private McpHttpServer mcp;
+    private volatile String mcpFailure;
     private boolean folia;
 
     @Override
@@ -40,13 +49,14 @@ public final class SurveyorPlugin extends JavaPlugin {
         database = new Database();
         regions = new RegionStore(database);
         edits = new EditService(this, new EditStore(database));
+        agents = new AgentApi(this, new AgentStore(database));
         Path file = getDataFolder().toPath().resolve(settings.storageFile());
-        database.open(file)
+        CompletableFuture<Integer> loaded = database.open(file)
                 .thenCompose(ignored -> {
                     getLogger().info("Database " + database.status());
                     return regions.load();
-                })
-                .whenComplete((count, error) -> {
+                });
+        loaded.whenComplete((count, error) -> {
                     if (error != null) {
                         getLogger().severe("Storage failed to start, region protection is not active: "
                                 + (error.getCause() != null ? error.getCause().getMessage() : error.getMessage()));
@@ -58,6 +68,15 @@ public final class SurveyorPlugin extends JavaPlugin {
                         });
                     }
                 });
+        // The tokens are loaded before the server starts, so nothing is ever served without them.
+        loaded.thenCompose(ignored -> agents.load()).whenComplete((tokens, error) -> {
+            if (error != null) {
+                mcpFailure = "storage failed to start";
+                return;
+            }
+            getLogger().info("Loaded " + tokens + " agent tokens");
+            getServer().getAsyncScheduler().runNow(this, task -> startMcp());
+        });
 
         getServer().getPluginManager().registerEvents(new ProtectionListener(new Protection(this, regions)), this);
         getServer().getPluginManager().registerEvents(new EditListener(this), this);
@@ -68,6 +87,9 @@ public final class SurveyorPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (mcp != null) {
+            mcp.stop();
+        }
         if (edits != null) {
             edits.shutdown();
         }
@@ -96,6 +118,41 @@ public final class SurveyorPlugin extends JavaPlugin {
         return edits;
     }
 
+    AgentApi agents() {
+        return agents;
+    }
+
+    /** The address the MCP server listens on, or null when it is not running. */
+    String mcpAddress() {
+        McpHttpServer running = mcp;
+        return running == null ? null : running.address();
+    }
+
+    /** Why the MCP server is not running, or null when it is, or when it is switched off. */
+    String mcpFailure() {
+        return mcpFailure;
+    }
+
+    private void startMcp() {
+        if (!settings.mcpEnabled()) {
+            return;
+        }
+        try {
+            // TLS is not built, so a remote bind is always refused.
+            InetAddress address = BindPolicy.resolve(settings.mcpBind(), settings.allowRemote(), false);
+            McpHttpServer server = new McpHttpServer(address, settings.mcpPort(), agents, getPluginMeta().getVersion(), getLogger());
+            server.start();
+            mcp = server;
+            getLogger().info("MCP server listening on http://" + server.address() + "/mcp");
+        } catch (IllegalArgumentException e) {
+            mcpFailure = e.getMessage();
+            getLogger().severe("The MCP server was not started: " + e.getMessage());
+        } catch (IOException e) {
+            mcpFailure = "could not bind " + settings.mcpBind() + ":" + settings.mcpPort() + " (" + e.getMessage() + ")";
+            getLogger().severe("The MCP server was not started: " + mcpFailure);
+        }
+    }
+
     boolean folia() {
         return folia;
     }
@@ -107,12 +164,17 @@ public final class SurveyorPlugin extends JavaPlugin {
                 Settings next = Settings.load(this);
                 Messages nextMessages = Messages.load(this);
                 boolean storageChanged = !next.storageFile().equals(settings.storageFile());
+                boolean serverChanged = next.mcpEnabled() != settings.mcpEnabled() || next.mcpPort() != settings.mcpPort()
+                        || !next.mcpBind().equals(settings.mcpBind()) || next.allowRemote() != settings.allowRemote();
                 settings = next;
                 messages = nextMessages;
                 getLogger().info("Configuration and messages reloaded by " + sender.getName());
                 reply(sender, messages.get("reload.success"));
                 if (storageChanged) {
                     reply(sender, messages.get("reload.storage-changed"));
+                }
+                if (serverChanged) {
+                    reply(sender, messages.get("reload.server-changed"));
                 }
             } catch (RuntimeException e) {
                 getLogger().warning("Reload failed, keeping the previous settings: " + e.getMessage());

@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import xyz.joogiebear.surveyor.core.edit.EditKind;
 import xyz.joogiebear.surveyor.core.edit.JournalCodec;
+import xyz.joogiebear.surveyor.core.edit.OperationState;
 import xyz.joogiebear.surveyor.core.edit.OperationStatus;
 
 /** SQL for operations and the undo journal. Everything runs on the database thread. */
@@ -17,8 +18,18 @@ public final class EditStore {
     }
 
     public record Operation(String id, String actorType, String actorId, EditKind kind, String world,
-                            OperationStatus status, String undoneBy) {
+                            OperationStatus status, String undoneBy, String reason, long blocksPlanned,
+                            long blocksChanged, long skippedProtected, long skippedOutOfScope,
+                            String regionsAffected, long createdAt, Long finishedAt) {
     }
+
+    /** What is known when an operation is first recorded. {@code regionsAffected} is a JSON array of names. */
+    public record NewOperation(String id, String actorType, String actorId, EditKind kind, String world,
+                               String paramsJson, String reason, long blocksPlanned, String regionsAffected) {
+    }
+
+    private static final String COLUMNS = "id, actor_type, actor_id, kind, world, status, undone_by, reason, "
+            + "blocks_planned, blocks_changed, skipped_protected, skipped_out_of_scope, regions_affected, created_at, finished_at";
 
     private final Database database;
 
@@ -26,37 +37,42 @@ public final class EditStore {
         this.database = database;
     }
 
-    public CompletableFuture<Void> insert(String id, String actorType, String actorId, EditKind kind, String world,
-                                          String paramsJson) {
+    public CompletableFuture<Void> insert(NewOperation op) {
         return database.submit(c -> {
-            try (PreparedStatement s = c.prepareStatement("INSERT INTO operations "
-                    + "(id, actor_type, actor_id, kind, world, status, params_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
-                s.setString(1, id);
-                s.setString(2, actorType);
-                s.setString(3, actorId);
-                s.setString(4, kind.key());
-                s.setString(5, world);
+            try (PreparedStatement s = c.prepareStatement("INSERT INTO operations (id, actor_type, actor_id, kind, world, "
+                    + "status, params_json, reason, blocks_planned, regions_affected, created_at) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+                s.setString(1, op.id());
+                s.setString(2, op.actorType());
+                s.setString(3, op.actorId());
+                s.setString(4, op.kind().key());
+                s.setString(5, op.world());
                 s.setString(6, OperationStatus.PLANNED.key());
-                s.setString(7, paramsJson);
-                s.setLong(8, System.currentTimeMillis());
+                s.setString(7, op.paramsJson());
+                s.setString(8, op.reason());
+                s.setLong(9, op.blocksPlanned());
+                s.setString(10, op.regionsAffected());
+                s.setLong(11, System.currentTimeMillis());
                 s.executeUpdate();
             }
             return null;
         });
     }
 
-    public CompletableFuture<Void> setStatus(String id, OperationStatus status, long blocksChanged) {
+    public CompletableFuture<Void> setStatus(String id, OperationStatus status, OperationState state) {
         return database.submit(c -> {
-            try (PreparedStatement s = c.prepareStatement(
-                    "UPDATE operations SET status = ?, blocks_changed = ?, finished_at = ? WHERE id = ?")) {
+            try (PreparedStatement s = c.prepareStatement("UPDATE operations SET status = ?, blocks_changed = ?, "
+                    + "skipped_protected = ?, skipped_out_of_scope = ?, finished_at = ? WHERE id = ?")) {
                 s.setString(1, status.key());
-                s.setLong(2, blocksChanged);
+                s.setLong(2, state.changed());
+                s.setLong(3, state.skippedProtected());
+                s.setLong(4, state.skippedOutOfScope());
                 if (status.terminal()) {
-                    s.setLong(3, System.currentTimeMillis());
+                    s.setLong(5, System.currentTimeMillis());
                 } else {
-                    s.setNull(3, java.sql.Types.INTEGER);
+                    s.setNull(5, java.sql.Types.INTEGER);
                 }
-                s.setString(4, id);
+                s.setString(6, id);
                 s.executeUpdate();
             }
             return null;
@@ -103,8 +119,7 @@ public final class EditStore {
     /** Null when there is no such operation. */
     public CompletableFuture<Operation> find(String id) {
         return database.submit(c -> {
-            try (PreparedStatement s = c.prepareStatement("SELECT id, actor_type, actor_id, kind, world, status, undone_by "
-                    + "FROM operations WHERE id = ?")) {
+            try (PreparedStatement s = c.prepareStatement("SELECT " + COLUMNS + " FROM operations WHERE id = ?")) {
                 s.setString(1, id);
                 try (ResultSet r = s.executeQuery()) {
                     return r.next() ? read(r) : null;
@@ -116,8 +131,8 @@ public final class EditStore {
     /** The actor's most recent journaled operation that has not been undone, or null. */
     public CompletableFuture<Operation> latestUndoable(String actorType, String actorId) {
         return database.submit(c -> {
-            try (PreparedStatement s = c.prepareStatement("SELECT id, actor_type, actor_id, kind, world, status, undone_by "
-                    + "FROM operations WHERE actor_type = ? AND actor_id = ? AND undone_by IS NULL "
+            try (PreparedStatement s = c.prepareStatement("SELECT " + COLUMNS + " FROM operations "
+                    + "WHERE actor_type = ? AND actor_id = ? AND undone_by IS NULL "
                     + "AND kind IN ('set', 'replace', 'paste') "
                     + "AND EXISTS (SELECT 1 FROM undo_journal j WHERE j.operation_id = operations.id) "
                     + "ORDER BY created_at DESC, id DESC LIMIT 1")) {
@@ -166,9 +181,14 @@ public final class EditStore {
 
     public CompletableFuture<Void> audit(String actorType, String actorId, String action, String target,
                                          String operationId, String result) {
+        return audit(actorType, actorId, action, target, operationId, result, null);
+    }
+
+    public CompletableFuture<Void> audit(String actorType, String actorId, String action, String target,
+                                         String operationId, String result, String reason) {
         return database.submit(c -> {
             try (PreparedStatement s = c.prepareStatement("INSERT INTO audit_log "
-                    + "(at, actor_type, actor_id, action, target, operation_id, result) VALUES (?, ?, ?, ?, ?, ?, ?)")) {
+                    + "(at, actor_type, actor_id, action, target, operation_id, result, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
                 s.setLong(1, System.currentTimeMillis());
                 s.setString(2, actorType);
                 s.setString(3, actorId);
@@ -176,6 +196,7 @@ public final class EditStore {
                 s.setString(5, target);
                 s.setString(6, operationId);
                 s.setString(7, result);
+                s.setString(8, reason);
                 s.executeUpdate();
             }
             return null;
@@ -183,8 +204,12 @@ public final class EditStore {
     }
 
     private static Operation read(ResultSet r) throws SQLException {
+        long finished = r.getLong(15);
+        Long finishedAt = r.wasNull() ? null : finished;
         return new Operation(r.getString(1), r.getString(2), r.getString(3),
                 EditKind.valueOf(r.getString(4).toUpperCase(java.util.Locale.ROOT)), r.getString(5),
-                OperationStatus.valueOf(r.getString(6).toUpperCase(java.util.Locale.ROOT)), r.getString(7));
+                OperationStatus.valueOf(r.getString(6).toUpperCase(java.util.Locale.ROOT)), r.getString(7),
+                r.getString(8), r.getLong(9), r.getLong(10), r.getLong(11), r.getLong(12), r.getString(13),
+                r.getLong(14), finishedAt);
     }
 }

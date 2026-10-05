@@ -20,8 +20,11 @@ final class Messages {
         return new Messages(ConfigFiles.load(plugin, "messages.yml"));
     }
 
+    // getString(key) falls back to the bundled defaults; getString(key, default) would not, and an
+    // older messages.yml on disk would show raw keys for every message added since.
     String raw(String key) {
-        return yaml.getString(key, key);
+        String text = yaml.getString(key);
+        return text != null ? text : key;
     }
 
     Component get(String key, TagResolver... resolvers) {

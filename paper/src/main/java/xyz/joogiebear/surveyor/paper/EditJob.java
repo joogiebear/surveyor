@@ -2,7 +2,6 @@ package xyz.joogiebear.surveyor.paper;
 
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -13,7 +12,6 @@ import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.data.BlockData;
-import org.bukkit.entity.Player;
 import xyz.joogiebear.surveyor.core.edit.Batch;
 import xyz.joogiebear.surveyor.core.edit.BatchPlanner;
 import xyz.joogiebear.surveyor.core.edit.BlockPattern;
@@ -33,22 +31,26 @@ abstract class EditJob {
 
     final String id = OperationIds.next();
     final EditKind kind;
-    final Player player;
-    final UUID actorId;
+    final Actor actor;
     final World world;
     final boolean strict;
     final boolean bypass;
+    final String reason;
     final OperationState state = new OperationState();
     final LongAccumulator slowestSliceNanos = new LongAccumulator(Math::max, 0);
     final long startedNanos = System.nanoTime();
+    /** Blocks that passed the checks at planning time, or -1 to record the size of the area. */
+    long planned = -1;
+    /** The chunk this job currently holds a plugin ticket on, or null. */
+    volatile int[] heldChunk;
 
-    EditJob(EditKind kind, Player player, World world, boolean strict, boolean bypass) {
+    EditJob(EditKind kind, Actor actor, World world, boolean strict, boolean bypass, String reason) {
         this.kind = kind;
-        this.player = player;
-        this.actorId = player.getUniqueId();
+        this.actor = actor;
         this.world = world;
         this.strict = strict;
         this.bypass = bypass;
+        this.reason = reason;
     }
 
     /** Whether each change is checked against regions. Copying reads only, so it is not. */
@@ -107,8 +109,8 @@ abstract class EditJob {
         private final Cuboid area;
         private List<Batch> batches = List.of();
 
-        AreaJob(EditKind kind, Player player, boolean strict, boolean bypass, Cuboid area) {
-            super(kind, player, player.getWorld(), strict, bypass);
+        AreaJob(EditKind kind, Actor actor, World world, boolean strict, boolean bypass, String reason, Cuboid area) {
+            super(kind, actor, world, strict, bypass, reason);
             this.area = area;
         }
 
@@ -155,9 +157,9 @@ abstract class EditJob {
         private final BlockPattern pattern;
         private final BlockData[] blocks;
 
-        Fill(Player player, boolean strict, boolean bypass, Cuboid area, String text, BlockPattern pattern,
-             BlockData[] blocks) {
-            super(EditKind.SET, player, strict, bypass, area);
+        Fill(Actor actor, World world, boolean strict, boolean bypass, String reason, Cuboid area, String text,
+             BlockPattern pattern, BlockData[] blocks) {
+            super(EditKind.SET, actor, world, strict, bypass, reason, area);
             this.text = text;
             this.pattern = pattern;
             this.blocks = blocks;
@@ -182,9 +184,9 @@ abstract class EditJob {
         private final BlockPattern pattern;
         private final BlockData[] blocks;
 
-        Replace(Player player, boolean strict, boolean bypass, Cuboid area, String from, String to,
-                List<Predicate<BlockData>> mask, BlockPattern pattern, BlockData[] blocks) {
-            super(EditKind.REPLACE, player, strict, bypass, area);
+        Replace(Actor actor, World world, boolean strict, boolean bypass, String reason, Cuboid area, String from,
+                String to, List<Predicate<BlockData>> mask, BlockPattern pattern, BlockData[] blocks) {
+            super(EditKind.REPLACE, actor, world, strict, bypass, reason, area);
             this.from = from;
             this.to = to;
             this.mask = mask;
@@ -224,8 +226,9 @@ abstract class EditJob {
         private final BlockData[] cache;
 
         /** @param origin where the whole clipboard lands; {@code area} is the part of it inside the world */
-        Paste(Player player, boolean strict, boolean bypass, Cuboid area, Clipboard clipboard, Cuboid origin) {
-            super(EditKind.PASTE, player, strict, bypass, area);
+        Paste(Actor actor, World world, boolean strict, boolean bypass, String reason, Cuboid area,
+              Clipboard clipboard, Cuboid origin) {
+            super(EditKind.PASTE, actor, world, strict, bypass, reason, area);
             this.clipboard = clipboard;
             this.origin = origin;
             this.cache = new BlockData[clipboard.palette().size()];
@@ -251,8 +254,8 @@ abstract class EditJob {
         private final Clipboard.Builder builder;
         private final Consumer<Clipboard> sink;
 
-        Copy(Player player, Cuboid area, Clipboard.Builder builder, Consumer<Clipboard> sink) {
-            super(EditKind.COPY, player, false, false, area);
+        Copy(Actor actor, World world, Cuboid area, Clipboard.Builder builder, Consumer<Clipboard> sink) {
+            super(EditKind.COPY, actor, world, false, false, null, area);
             this.builder = builder;
             this.sink = sink;
         }
@@ -286,8 +289,8 @@ abstract class EditJob {
         private List<EditStore.JournalRow> rows = List.of();
         private final Map<String, BlockData> blocks = new ConcurrentHashMap<>();
 
-        Undo(Player player, World world, boolean bypass, String target) {
-            super(EditKind.UNDO, player, world, false, bypass);
+        Undo(Actor actor, World world, boolean bypass, String reason, String target) {
+            super(EditKind.UNDO, actor, world, false, bypass, reason);
             this.target = target;
         }
 

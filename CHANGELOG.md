@@ -21,3 +21,20 @@
   `surveyor.edit.undo`.
 - Edits interrupted by a crash are marked failed at startup and reported to admins; `/sv undo <id>`
   restores what they changed.
+- Agent interface: an embedded MCP server (`POST /mcp`, loopback only, bearer tokens) speaking
+  revision 2026-07-28 and the earlier handshake revisions, with tools for worlds, selections, edits
+  (`set`, `replace`, `copy`, `paste`, `undo`), regions, flags, members, operations and audit. Every
+  change supports `dryRun`, `reason`, `idempotencyKey` and (edits) `strict`.
+- Agent tokens: `/sv agent token create|list|revoke|scope` and `/sv audit`, with the permissions
+  `surveyor.agent.admin` and `surveyor.audit`. Secrets are 256-bit, shown once in game and stored only
+  as a SHA-256 hash; a token has worlds, an optional box, allowed actions, a block cap and a rate
+  limit, can expire, and revoking one cancels its running operations at once.
+- Operations now record how many blocks were planned and skipped (protected or out of scope) and
+  which regions they touched, so `operation.status` still answers after a restart.
+- `audit.log-dry-runs` in `config.yml`.
+- Fixed edits never starting when no player is near the area: the chunk is now held with a plugin
+  ticket while a batch runs, so Folia has a ticking region to run it on.
+- Fixed a message added in a new version showing as its raw key when `messages.yml` on disk was
+  older than the plugin.
+- Fixed a region or selection whose size overflows a long being treated as small: block counts now
+  saturate.

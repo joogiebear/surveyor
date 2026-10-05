@@ -7,7 +7,9 @@ import org.bukkit.plugin.java.JavaPlugin;
 import xyz.joogiebear.surveyor.core.Limits;
 import xyz.joogiebear.surveyor.core.region.Flag;
 
-record Settings(boolean mcpEnabled, Limits limits, String storageFile, Map<Flag, Boolean> defaults) {
+record Settings(boolean mcpEnabled, String mcpBind, int mcpPort, boolean allowRemote, int defaultRatePerMinute,
+                boolean requireReason, boolean logDryRuns, Limits limits, String storageFile,
+                Map<Flag, Boolean> defaults) {
 
     static Settings load(JavaPlugin plugin) {
         YamlConfiguration yaml = ConfigFiles.load(plugin, "config.yml");
@@ -31,6 +33,16 @@ record Settings(boolean mcpEnabled, Limits limits, String storageFile, Map<Flag,
             }
             defaults.put(flag, "allow".equalsIgnoreCase(value));
         }
-        return new Settings(yaml.getBoolean("server.enabled"), limits, file, Map.copyOf(defaults));
+        int port = yaml.getInt("server.port");
+        if (port < 1 || port > 65535) {
+            throw new IllegalArgumentException("server.port must be between 1 and 65535, got " + port);
+        }
+        int rate = yaml.getInt("agents.default-rate-limit-per-minute");
+        if (rate < 1) {
+            throw new IllegalArgumentException("agents.default-rate-limit-per-minute must be at least 1");
+        }
+        return new Settings(yaml.getBoolean("server.enabled"), yaml.getString("server.bind", "127.0.0.1"), port,
+                yaml.getBoolean("server.allow-remote"), rate, yaml.getBoolean("agents.require-reason"),
+                yaml.getBoolean("audit.log-dry-runs"), limits, file, Map.copyOf(defaults));
     }
 }

@@ -4,7 +4,7 @@ Region protection and world editing for AI agents and developers, as one Paper +
 Players use commands and a wand. AI agents use an MCP server and typed JSON operations. Both go
 through the same permission, region, limit and audit checks.
 
-Status: early development. Regions and protection work; editing and the agent interface are planned; see [docs/SPEC.md](docs/SPEC.md).
+Status: early development. Regions, protection, editing and the agent interface work; hardening and packaging are planned; see [docs/SPEC.md](docs/SPEC.md).
 
 ## Requirements
 
@@ -35,6 +35,8 @@ The plugin jar is `paper/build/libs/Surveyor-<version>.jar`.
 | `/sv status` | `surveyor.admin` | Plugin and server versions, Folia detection, database and MCP state |
 | `/sv reload` | `surveyor.admin` | Reload `config.yml` and `messages.yml` |
 | `/sv region <create\|delete\|info\|list\|addmember\|removemember\|owner\|flag\|priority>` | `surveyor.region.manage` | Manage regions and their flags |
+| `/sv agent token <create\|list\|revoke\|scope>` | `surveyor.agent.admin` | Create, scope and revoke tokens for AI agents (the MCP server listens on 127.0.0.1:8765) |
+| `/sv audit [token <name>] [count]` | `surveyor.audit` | Recent audit entries |
 
 `surveyor.bypass.region` lets a player ignore region protection; every override is audited.
 

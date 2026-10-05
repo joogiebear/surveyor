@@ -116,7 +116,8 @@ final class EditCommand {
         Resolved to = resolve(player, words[0]);
         Cuboid area = to == null ? null : selected(player);
         if (area != null) {
-            submit(player, new EditJob.Fill(player, strict, bypass(player), area, words[0], to.pattern(), to.blocks()), area.volume());
+            submit(player, new EditJob.Fill(new Actor.Human(player), player.getWorld(), strict, bypass(player), null, area,
+                    words[0], to.pattern(), to.blocks()), area.volume());
         }
     }
 
@@ -143,8 +144,8 @@ final class EditCommand {
         Resolved to = resolve(player, words[1]);
         Cuboid area = to == null ? null : selected(player);
         if (area != null) {
-            submit(player, new EditJob.Replace(player, strict, bypass(player), area, words[0], words[1], mask,
-                    to.pattern(), to.blocks()), area.volume());
+            submit(player, new EditJob.Replace(new Actor.Human(player), player.getWorld(), strict, bypass(player), null,
+                    area, words[0], words[1], mask, to.pattern(), to.blocks()), area.volume());
         }
     }
 
@@ -155,8 +156,8 @@ final class EditCommand {
         }
         UUID id = player.getUniqueId();
         Clipboard.Builder builder = Clipboard.builder(area, anchor(player));
-        submit(player, new EditJob.Copy(player, area, builder, clipboard -> plugin.edits().setClipboard(id, clipboard)),
-                area.volume());
+        submit(player, new EditJob.Copy(new Actor.Human(player), player.getWorld(), area, builder,
+                clipboard -> plugin.edits().setClipboard(id, clipboard)), area.volume());
     }
 
     private void paste(Player player, String[] args) {
@@ -169,7 +170,8 @@ final class EditCommand {
         Cuboid origin = clipboard.areaAt(anchor(player));
         Cuboid area = inWorld(player, origin);
         if (area != null) {
-            submit(player, new EditJob.Paste(player, strict(args), bypass(player), area, clipboard, origin), area.volume());
+            submit(player, new EditJob.Paste(new Actor.Human(player), player.getWorld(), strict(args), bypass(player), null,
+                    area, clipboard, origin), area.volume());
         }
     }
 
@@ -199,7 +201,7 @@ final class EditCommand {
                 plugin.reply(player, messages.get(refusal, unparsed("id", args.length == 1 ? args[0] : "")));
                 return;
             }
-            EditJob.Undo job = new EditJob.Undo(player, world, bypass, operation.id());
+            EditJob.Undo job = new EditJob.Undo(new Actor.Human(player), world, bypass, null, operation.id());
             String refused = plugin.edits().start(job);
             plugin.reply(player, refused != null ? messages.get(refused)
                     : messages.get("edit.started", unparsed("id", job.id), unparsed("kind", job.kind.key()),
@@ -232,13 +234,13 @@ final class EditCommand {
             player.sendMessage(messages.get("edit.usage-cancel", unparsed("label", label)));
             return;
         }
-        EditJob job = args.length == 1 ? plugin.edits().find(args[0]) : plugin.edits().latestActive(player.getUniqueId());
+        EditJob job = args.length == 1 ? plugin.edits().find(args[0]) : plugin.edits().latestActive(new Actor.Human(player));
         if (job == null) {
             player.sendMessage(messages.get(args.length == 1 ? "edit.error.unknown-operation" : "edit.error.nothing-running",
                     unparsed("id", args.length == 1 ? args[0] : "")));
             return;
         }
-        if (!job.actorId.equals(player.getUniqueId()) && !player.hasPermission(ADMIN)) {
+        if (!EditService.sameActor(job.actor, new Actor.Human(player)) && !player.hasPermission(ADMIN)) {
             player.sendMessage(messages.get("edit.error.not-yours"));
             return;
         }

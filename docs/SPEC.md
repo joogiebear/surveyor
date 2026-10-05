@@ -40,15 +40,18 @@ Clean-room: see `CLAUDE.md`. This design is original.
 
 ### 3.2 Admin
 1. Install, set `server.port` and limits in `config.yml`, restart or `/sv reload`.
-2. Create an agent token: `/sv agent token create <name>`. The secret is shown once.
-3. Set its scope: worlds, bounding box, allowed actions, per-operation block cap, rate limit.
-4. Review activity with `/sv audit`; revoke with `/sv agent token revoke <name>`.
+2. Create an agent token in game: `/sv agent token create <name> [days]`. The secret is shown once, in
+   chat, and can be copied with a click. The console is refused, because it is logged.
+3. Set its scope: `/sv agent token scope <name> worlds|box|actions|maxblocks|rate ...`. A new token
+   can do nothing until it has worlds and actions. `scope <name>` alone shows the scope.
+4. Review activity with `/sv audit [token <name>] [count]`; revoke with `/sv agent token revoke <name>`.
 
 ### 3.3 Agent
 1. Connect an MCP client to `http://127.0.0.1:<port>/mcp` with `Authorization: Bearer <secret>`.
 2. List tools, call them with typed JSON arguments. Mutating tools accept `dryRun`.
 3. Call with `dryRun: true`, inspect the plan, then repeat without it. Large edits return an
-   `operationId` immediately and finish over several ticks; poll `operation.status`.
+   `operationId` immediately and finish over several ticks; poll `operation.status` (polls count
+   against the rate limit).
 4. Undo with `edit.undo { operationId }`.
 
 ## 4. Commands and permissions (proposed)
@@ -76,6 +79,11 @@ region; owner-scoped management is not in v1.
 | `/sv audit` | `surveyor.audit` |
 | `/sv status`, `/sv reload` | `surveyor.admin` |
 | Bypass region protection | `surveyor.bypass.region` (audited) |
+
+Agent syntax: `agent token create <name> [days]` (players only), `agent token list`,
+`agent token revoke <name>`, `agent token scope <name> [worlds <w,w|none>] [box <world> <x1> <y1> <z1>
+<x2> <y2> <z2>|box clear] [actions <a,b|none>] [maxblocks <n|default>] [rate <n|default>]` (one setting
+per command), `audit [token <name>] [count]`. `surveyor.agent.admin` and `surveyor.audit` default to op.
 
 ## 5. Regions and flags
 
@@ -132,7 +140,9 @@ growth, vehicles, hanging entities, and non-player damage.
 - Execution: plan off-thread into per-chunk batches (at most 4096 blocks, split by height), then
   work through the batches one at a time. For each batch, on the region scheduler that owns the
   chunk: scan it in slices, commit its previous block data to the undo journal, then apply it in
-  slices. Every slice stops at `limits.tick-budget-ms` and continues on the next tick. Blocks are
+  slices. Every slice stops at `limits.tick-budget-ms` and continues on the next tick. While a batch runs the
+  plugin holds a chunk ticket on its chunk and releases it when the batch ends: a chunk that is only
+  loaded, with no player near it, belongs to no ticking region and Folia would never run the batch. Blocks are
   set without physics updates. The journal row is stored before any block of its batch changes.
   The area is cut to the world's build height; its size is checked against
   `limits.max-blocks-per-operation` and `limits.max-concurrent-operations` is enforced.
@@ -140,8 +150,9 @@ growth, vehicles, hanging entities, and non-player damage.
   journaled and again just before it is applied. Positions that fail are skipped and counted in
   `skipped.protected`; only blocks that would actually change are counted. With `strict`, the
   whole area is checked first and the operation fails with nothing applied if any position in it
-  is protected (including positions a `replace` would not have touched). Actor scope joins this
-  check in milestone 4. `surveyor.bypass.region` skips the checks and writes one `bypass.edit`
+  is protected (including positions a `replace` would not have touched). For an agent token, its
+  scope is checked first and positions outside it are skipped and counted in `skipped.outOfScope`
+  (see 7.4). `surveyor.bypass.region` skips the checks and writes one `bypass.edit`
   audit row per operation that would otherwise have been denied something.
 - Undo journal: one `undo_journal` row per batch: a palette of block data strings plus one entry per
   changed block (x and z in the chunk, y, palette index), gzipped. `seq` is the batch number.
@@ -164,31 +175,70 @@ growth, vehicles, hanging entities, and non-player damage.
 
 ## 7. Agent interface
 
-Transport: MCP over HTTP (verify the current MCP HTTP transport spec when implementing), bound to
-`server.bind` (default `127.0.0.1`). Auth: bearer token, secret stored as a hash.
+Transport: MCP over Streamable HTTP, one endpoint, `POST /mcp`, on `server.bind`:`server.port`
+(default `127.0.0.1:8765`). Checked against the MCP specification revision 2026-07-28 and the
+earlier handshake revisions on 2026-10-04.
 
-### 7.1 Tools (proposed names)
+- Revision 2026-07-28 is stateless: every request carries `_meta` with
+  `io.modelcontextprotocol/protocolVersion` and `.../clientCapabilities`, and the headers
+  `MCP-Protocol-Version`, `Mcp-Method` and, for `tools/call`, `Mcp-Name` (plain or `=?base64?...?=`).
+  A header that disagrees with the body is `400` with `-32020`; an unknown version is `400` with
+  `-32022` and the supported list; `server/discover` is answered; results carry
+  `resultType: "complete"`.
+- Revisions 2025-11-25, 2025-06-18 and 2025-03-26 are served on the same endpoint: an `initialize`
+  request is answered with the client's version (or `2025-11-25`) and no `Mcp-Session-Id`, and later
+  requests are served as they arrive. A request with no `MCP-Protocol-Version` header counts as
+  2025-03-26.
+- Every reply is `application/json`; there is no SSE stream, no subscription and no resumption. `GET` and
+  `DELETE` get `405`, a notification gets `202`, a JSON-RPC batch is refused (`400`, `-32600`), a body
+  over 1 MiB is `413`.
+- Auth: `Authorization: Bearer <secret>` on every request, else `401` with `WWW-Authenticate`.
+  If an `Origin` header is present its host must be `localhost`, `127.0.0.1` or `[::1]`, else `403`.
+- Bind: only loopback is accepted. Anything else is refused even with `server.allow-remote: true`,
+  because TLS is not built; the plugin keeps running without the MCP server and `/sv status` says why.
+- `tools/list` returns only the tools the token's scope allows. `tools/call` returns the result of
+  7.3 both as text and as `structuredContent`, with `isError` set when `ok` is false. An unknown
+  tool or malformed arguments object is a JSON-RPC `-32602` error.
+
+### 7.1 Tools
+
+World arguments are `world` (name). Positions are `[x, y, z]` arrays of integers. Regions are named
+by `world` and `region`.
 
 | Tool | Mutates | Purpose |
 |---|---|---|
-| `world.list` | no | Worlds and bounds the token may use |
-| `selection.get` / `selection.set` | set | Per-token selection (two positions) |
-| `edit.set` / `edit.replace` | yes | Bulk block edits |
-| `edit.copy` / `edit.paste` | yes (paste) | Clipboard per token |
-| `edit.undo` | yes | Undo by `operationId` |
-| `region.create` / `region.update` / `region.delete` | yes | Region management |
-| `region.get` / `region.list` / `region.at` | no | Query regions, by id, filter or position |
-| `flag.set` / `flag.clear` | yes | Region flags |
-| `member.add` / `member.remove` | yes | Region membership |
-| `operation.status` / `operation.cancel` | cancel | Track long operations |
-| `audit.query` | no | Recent actions by token, region or operation |
+| `world.list` | no | Worlds the token may use, height limits, its box, block cap, calls per minute |
+| `selection.get` / `selection.set` | token state only | Per-token selection: `pos1`, `pos2`, or `clear: true` |
+| `edit.set` | yes | `pattern`; area from `pos1`+`pos2`, or the selection when both are left out |
+| `edit.replace` | yes | `from`, `to`; area as `edit.set` |
+| `edit.copy` | clipboard only | Copies the area to the token's clipboard; optional `anchor` (default: minimum corner) |
+| `edit.paste` | yes | `at`: the block the clipboard anchor lands on |
+| `edit.undo` | yes | `operationId` of one of the token's own operations |
+| `region.create` | yes | `region`, `min`, `max`; the token is not made a member |
+| `region.update` | yes | `priority` only; bounds cannot be changed in v1 |
+| `region.delete` | yes | |
+| `region.get` / `region.list` / `region.at` | no | `at` is a position; `list` takes an optional world |
+| `flag.set` / `flag.clear` | yes | `flag`, `value` (allow or deny), optional `audience` |
+| `member.add` / `member.remove` | yes | `player` (name or UUID), `role` (member or owner) |
+| `operation.status` / `operation.cancel` | cancel | The token's own operations only |
+| `audit.query` | no | The token's own audit rows; filters `operationId`, `region`, `action`, `limit` (max 200) |
+
+Arguments are checked against the tool's input schema before anything runs: unknown names, wrong
+types, missing required values and bad enum values are `INVALID_ARGUMENT` with a message naming the
+argument. The full schemas are what `tools/list` returns.
 
 ### 7.2 Common arguments
-- `dryRun` (bool): plan only, change nothing.
-- `reason` (string): free-text rationale, stored in the audit log. Required if
-  `agents.require-reason` is true.
-- `idempotencyKey` (string): repeated calls with the same key return the original result.
-- `strict` (bool): fail the whole operation if any position is denied.
+- `dryRun` (bool): plan only, change nothing. For edits it returns `blocksPlanned` (positions that pass
+  scope and region checks), `skipped` and `regionsAffected`, with no `operationId`. For region, flag
+  and member tools it validates fully and returns the region as it would look afterwards.
+- `reason` (string): stored in the audit log and on the operation. Required for every non-dry
+  change if `agents.require-reason` is true, except `operation.cancel`.
+- `idempotencyKey` (string): for 24 hours, a repeat of the same request returns the first result with
+  `replayed: true`; a different request under the same key is `CONFLICT`. Only successful results
+  are kept, so a failed call can be corrected and retried under the same key. Not used with `dryRun`.
+- `strict` (bool, edits): fail the whole call with nothing applied if any position in the area is
+  protected or out of scope (the code is `OUT_OF_SCOPE` if any position is out of scope, else
+  `REGION_DENIED`). Counts every position in the area, including ones a replace would not change.
 
 ### 7.3 Result shape
 ```json
@@ -204,18 +254,68 @@ Transport: MCP over HTTP (verify the current MCP HTTP transport spec when implem
   "errors": [{ "code": "OUT_OF_SCOPE", "message": "..." }]
 }
 ```
+`errors` is present only when `ok` is false (a refused strict edit still carries the counts). Tools
+that are not edits return their own fields next to `ok` (`worlds`, `region`, `regions`, `entries`).
+A rate-limited call also carries `retryAfterMs`.
+
+An edit that is not refused returns at once, with the operation `planned`; edits run over several
+ticks, and the final numbers come from `operation.status`. At start, `blocksPlanned` and `skipped` are
+the plan (positions in the area); at the end they are the blocks that were actually skipped, which
+for `replace` and for blocks already holding the new value can be fewer.
+
 Error codes: `UNAUTHORIZED`, `OUT_OF_SCOPE`, `REGION_DENIED`, `LIMIT_EXCEEDED`, `RATE_LIMITED`,
 `INVALID_ARGUMENT`, `NOT_FOUND`, `CONFLICT`, `INTERNAL`. Messages are written for an agent to act
-on (say what was wrong and what to change).
+on (say what was wrong and what to change). A token never learns that something outside its scope
+exists: another token's operation, a region it cannot see, or a world it may not use are reported as
+`NOT_FOUND` or `OUT_OF_SCOPE`, never as present.
 
 ### 7.4 Safety model
-- Every tool call is checked against the token scope first, then region rights, then limits.
-- Per-token rate limit and per-operation block cap. Global concurrent-operation cap.
-- Audit record for every mutating call, including dry runs of large operations if configured.
-- Tokens: 256-bit random secret, shown once, stored as SHA-256 hash, optional expiry, revocable
-  immediately. Revoking cancels that token's running operations.
-- No remote binding in v1 (config refuses a non-loopback bind unless `server.allow-remote: true`
-  and TLS is configured; TLS itself is post-v1).
+Every tool call passes these checks in this order, and the first that fails ends it:
+
+1. The token exists, is not revoked and has not expired.
+2. Rate limit: a token bucket per token, a full bucket holds one minute of calls, kept in memory
+   (it resets on restart). The token's `ratePerMinute`, else `agents.default-rate-limit-per-minute`.
+   Every call counts, reads and dry runs included. Calls refused here are not audited.
+3. The tool is among the token's allowed actions.
+4. The arguments fit the schema, and a reason is given where required.
+5. Inside the tool: the world is allowed; the area is cut to the world's height, must be inside the
+   world border, must not exceed the block cap (`min(limits.max-blocks-per-operation`, the token's
+   `maxBlocks`)) and must touch the token's scope; then every position is checked by scope and then
+   by region rights; then concurrency (`limits.max-concurrent-operations`) is checked when the edit
+   starts. The size cap is checked before positions are scanned (the scan is what it protects), so
+   it comes ahead of region rights, not after.
+
+Scope (stored as `scope_json`, empty by default so a new token can do nothing):
+```json
+{ "worlds": ["world"],
+  "box": { "world": "world", "min": [x, y, z], "max": [x, y, z] },
+  "actions": ["edit.*", "world.list", "operation.status"],
+  "maxBlocks": 50000, "ratePerMinute": 60 }
+```
+`actions` are tool names, group wildcards (`edit.*`) or `*`. With a `box` the token is confined to it:
+positions outside it, in any world, are out of scope. An edit that partly overlaps the scope skips
+the outside positions (`skipped.outOfScope`); one that does not touch it is refused. `edit.copy`
+needs the whole area inside the scope. A token may read regions that touch its scope and change
+only regions that lie entirely inside it; `region.create` needs the whole new region inside it. A scope
+change applies to running operations at their next batch.
+
+Region rights: an agent is not a player, so regions treat it as a non-member of everything, always
+(there is no agent membership in v1). It is therefore stopped by `build` flags aimed at non-members
+or everyone, including on regions it created. It never has bypass.
+
+- Selections and clipboards are per token, in memory, dropped when the token is revoked or on restart.
+- Audit: every call to a changing tool (`edit.set`, `edit.replace`, `edit.paste`, `edit.undo`,
+  `region.*`, `flag.*`, `member.*`, `operation.cancel`) that passes the rate limit writes an audit row,
+  refused calls included, with the reason. An accepted edit writes its row when it finishes (with
+  its final status) rather than at the call. Dry runs are audited only if `audit.log-dry-runs` is true.
+  `edit.copy` and `selection.set` change nothing outside the token's own state and are not audited.
+- Tokens: 256-bit random secret (`sv_` plus base64url), shown once, stored as a SHA-256 hash plus its
+  first 9 characters for display, optional expiry, revocable at once. Revoking takes effect on the
+  next call, asks the token's running operations to stop (they finish as `cancelled`; applied
+  batches stay undoable) and then saves. If the save fails the token stays revoked until restart and the
+  admin is told. Secrets are only ever shown in game: `/sv agent token create` refuses the console,
+  because the console is written to the server log.
+- No remote binding in v1 (see Bind above; TLS itself is post-v1).
 
 ## 8. Configuration (proposed)
 
@@ -240,6 +340,7 @@ undo:
   retention-days: 14
 audit:
   retention-days: 90
+  log-dry-runs: false
 defaults:
   build: allow
   interact: allow
@@ -247,7 +348,9 @@ defaults:
   mob-spawning: allow
   entry: allow
 ```
-`messages.yml`: all player-facing text. Hot reload via `/sv reload` for both files.
+`messages.yml`: all player-facing text. Hot reload via `/sv reload` for both files, except `server.*`
+and `storage.*`, which need a restart (the reload says so). A message missing from an older
+`messages.yml` falls back to the bundled text.
 
 ## 9. Data model (SQLite, WAL)
 
@@ -257,18 +360,24 @@ All writes happen off the region threads. Schema is versioned with forward-only 
 - `regions(id, world, name, min_x, min_y, min_z, max_x, max_y, max_z, priority, created_at)`
 - `region_members(region_id, subject_type, subject_id, role)` subject: player UUID
 - `region_flags(region_id, flag, value, audience)`
-- `agent_tokens(id, name, secret_hash, scope_json, created_by, created_at, expires_at, revoked_at)`
-- `operations(id, actor_type, actor_id, kind, world, status, params_json, reason, blocks_changed,
-  created_at, finished_at, undone_by)` ids look like `op_` plus 14 base 36 characters that sort in
+- `agent_tokens(id, name, secret_hash, secret_prefix, scope_json, created_by, created_at, expires_at,
+  revoked_at)`
+- `operations(id, actor_type, actor_id, kind, world, status, params_json, reason, blocks_planned,
+  blocks_changed, skipped_protected, skipped_out_of_scope, regions_affected, created_at, finished_at,
+  undone_by)` (`actor_type` is `player` or `agent`; for agents `actor_id` is the token id) ids look like `op_` plus 14 base 36 characters that sort in
   creation order
 - `undo_journal(operation_id, chunk_x, chunk_z, seq, data)` previous block states per chunk batch
-- `audit_log(id, at, actor_type, actor_id, action, target, operation_id, result)`
+- `audit_log(id, at, actor_type, actor_id, action, target, operation_id, result, reason)`
+- `idempotency(token_id, key, request_hash, response_json, created_at)` results kept for 24 hours,
+  pruned at startup
 
 Undo journal writes for a batch are committed before that batch is applied to the world.
 
 Migration 1 (`001_baseline.sql`) creates all the tables above. The runner owns `schema_version`.
 Migration 2 (`002_undo_marker.sql`) adds `operations.undone_by` and an index on
-`operations(actor_type, actor_id, created_at)`. Later schema changes are new numbered migrations; a database newer than the plugin is refused.
+`operations(actor_type, actor_id, created_at)`. Migration 3 (`003_agents.sql`) adds `operations.blocks_planned`, `skipped_protected`,
+`skipped_out_of_scope` and `regions_affected`, `audit_log.reason`, `agent_tokens.secret_prefix`, the
+`idempotency` table and indexes on `audit_log`. Later schema changes are new numbered migrations; a database newer than the plugin is refused.
 
 ## 10. Milestones
 

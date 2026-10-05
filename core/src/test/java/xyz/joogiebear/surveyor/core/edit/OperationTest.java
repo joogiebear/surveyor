@@ -56,8 +56,10 @@ class OperationTest {
         state.addChanged(10);
         state.addChanged(5);
         state.addSkippedProtected(3);
+        state.addSkippedOutOfScope(7);
         assertEquals(15, state.changed());
         assertEquals(3, state.skippedProtected());
+        assertEquals(7, state.skippedOutOfScope());
     }
 
     @Test

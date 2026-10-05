@@ -25,6 +25,27 @@ class RegionTest {
     }
 
     @Test
+    void volumeSaturatesInsteadOfWrappingAround() {
+        assertEquals(1000, new Cuboid(0, 0, 0, 9, 9, 9).volume());
+        Cuboid everything = new Cuboid(Integer.MIN_VALUE, -64, Integer.MIN_VALUE, Integer.MAX_VALUE, 319, Integer.MAX_VALUE);
+        assertEquals(Long.MAX_VALUE, everything.volume());
+        // 2^32 * 2^32 * 1 overflows a long on its own.
+        assertEquals(Long.MAX_VALUE, new Cuboid(Integer.MIN_VALUE, 0, Integer.MIN_VALUE, Integer.MAX_VALUE, 0, Integer.MAX_VALUE).volume());
+    }
+
+    @Test
+    void cuboidIntersectionAndContainment() {
+        Cuboid box = new Cuboid(0, 0, 0, 9, 9, 9);
+        assertTrue(box.intersects(new Cuboid(9, 9, 9, 20, 20, 20)));
+        assertTrue(box.intersects(new Cuboid(-5, -5, -5, 0, 0, 0)));
+        assertFalse(box.intersects(new Cuboid(10, 0, 0, 20, 9, 9)));
+        assertFalse(box.intersects(new Cuboid(0, 10, 0, 9, 20, 9)));
+        assertTrue(box.contains(new Cuboid(1, 1, 1, 9, 9, 9)));
+        assertTrue(box.contains(box));
+        assertFalse(box.contains(new Cuboid(1, 1, 1, 10, 9, 9)));
+    }
+
+    @Test
     void cuboidWithMinAboveMaxIsRejected() {
         assertThrows(IllegalArgumentException.class, () -> new Cuboid(1, 0, 0, 0, 0, 0));
     }

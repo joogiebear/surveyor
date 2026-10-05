@@ -25,7 +25,7 @@ import xyz.joogiebear.surveyor.core.storage.MigrationPlan;
 public final class Database implements AutoCloseable {
 
     private static final List<Migration> MIGRATIONS = List.of(
-            new Migration(1, "baseline"), new Migration(2, "undo_marker"));
+            new Migration(1, "baseline"), new Migration(2, "undo_marker"), new Migration(3, "agents"));
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "Surveyor-Database");
@@ -38,6 +38,11 @@ public final class Database implements AutoCloseable {
 
     public String status() {
         return status;
+    }
+
+    /** True once the database is open and migrated. */
+    public boolean ready() {
+        return status.startsWith("ready");
     }
 
     public CompletableFuture<Void> open(Path file) {
