@@ -127,6 +127,7 @@ public final class McpHttpServer {
 
     private ToolBackend.Auth authenticate(String header) {
         if (header == null || !header.regionMatches(true, 0, "Bearer ", 0, 7) || header.length() == 7) {
+            backend.missingCredentials();
             return new ToolBackend.Auth(null, "Send the token as 'Authorization: Bearer <secret>'.");
         }
         return backend.authenticate(header.substring(7).trim());

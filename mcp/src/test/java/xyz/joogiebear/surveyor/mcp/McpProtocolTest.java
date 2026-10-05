@@ -66,6 +66,8 @@ class McpProtocolTest {
         assertEquals("complete", result.get("resultType").getAsString());
         assertEquals("2026-07-28", result.getAsJsonArray("supportedVersions").get(0).getAsString());
         assertTrue(result.getAsJsonArray("supportedVersions").toString().contains("2025-11-25"));
+        assertEquals("private", result.get("cacheScope").getAsString());
+        assertEquals(0, result.get("ttlMs").getAsInt());
         assertEquals("1.2.3", object(object(result, "_meta"), "io.modelcontextprotocol/serverInfo").get("version").getAsString());
     }
 
@@ -80,6 +82,8 @@ class McpProtocolTest {
         assertFalse(names.contains("\"region.delete\""));
         assertFalse(names.contains("\"audit.query\""));
         assertEquals("a", reply.body().get("id").getAsString());
+        assertEquals("private", object(reply.body(), "result").get("cacheScope").getAsString());
+        assertEquals(0, object(reply.body(), "result").get("ttlMs").getAsInt());
     }
 
     @Test

@@ -92,7 +92,7 @@ public final class McpProtocol {
             case "ping" -> done(result(id, new JsonObject(), modern));
             case "server/discover" -> done(modern ? discover(id) : error(id, METHOD_NOT_FOUND,
                     "server/discover needs the per-request _meta of revision " + MODERN + ".", 404));
-            case "tools/list" -> done(result(id, listTools(principal), modern));
+            case "tools/list" -> done(result(id, modern ? uncached(listTools(principal)) : listTools(principal), modern));
             case "tools/call" -> call(principal, id, params, modern);
             default -> done(error(id, METHOD_NOT_FOUND, "Unknown method " + method + ".", modern ? 404 : 200));
         };
@@ -160,7 +160,15 @@ public final class McpProtocol {
         JsonObject meta = new JsonObject();
         meta.add(META_SERVER_INFO, info);
         result.add(META, meta);
-        return result(id, result, true);
+        return result(id, uncached(result), true);
+    }
+
+    // Revision 2026-07-28 requires freshness hints on these results. The tool list depends on the token
+    // and its scope can change at any time, so it is private and never cached.
+    private static JsonObject uncached(JsonObject result) {
+        result.addProperty("cacheScope", "private");
+        result.addProperty("ttlMs", 0);
+        return result;
     }
 
     private static JsonObject capabilities() {

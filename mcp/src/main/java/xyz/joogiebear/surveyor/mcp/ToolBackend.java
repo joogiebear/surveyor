@@ -13,6 +13,10 @@ public interface ToolBackend {
     /** Safe to call from any thread. Never logs or stores the secret. */
     Auth authenticate(String secret);
 
+    /** A request arrived with no usable Authorization header. Safe to call from any thread. */
+    default void missingCredentials() {
+    }
+
     /** Safe to call from any thread. The future completes with a result, never exceptionally. */
     CompletableFuture<ToolResult> call(Principal principal, String tool, JsonObject arguments);
 }
