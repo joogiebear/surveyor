@@ -224,6 +224,10 @@ final class AgentEdits {
             if (own.undoneBy() != null) {
                 throw new ToolException(ErrorCode.CONFLICT, "Operation " + id + " was already undone by " + own.undoneBy() + ".");
             }
+            if (own.blocksChanged() > 0 && !own.hasJournal()) {
+                throw new ToolException(ErrorCode.CONFLICT, "The undo journal of operation " + id
+                        + " was deleted after undo.retention-days, so it can no longer be undone.");
+            }
             if (own.status() == OperationStatus.PLANNED || own.status() == OperationStatus.RUNNING) {
                 throw new ToolException(ErrorCode.CONFLICT, "Operation " + id + " is still " + own.status().key()
                         + ". Wait for it to finish, or cancel it with operation.cancel first.");

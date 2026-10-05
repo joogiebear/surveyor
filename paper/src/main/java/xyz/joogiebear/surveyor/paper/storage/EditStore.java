@@ -20,7 +20,7 @@ public final class EditStore {
     public record Operation(String id, String actorType, String actorId, EditKind kind, String world,
                             OperationStatus status, String undoneBy, String reason, long blocksPlanned,
                             long blocksChanged, long skippedProtected, long skippedOutOfScope,
-                            String regionsAffected, long createdAt, Long finishedAt) {
+                            String regionsAffected, long createdAt, Long finishedAt, boolean hasJournal) {
     }
 
     /** What is known when an operation is first recorded. {@code regionsAffected} is a JSON array of names. */
@@ -29,7 +29,8 @@ public final class EditStore {
     }
 
     private static final String COLUMNS = "id, actor_type, actor_id, kind, world, status, undone_by, reason, "
-            + "blocks_planned, blocks_changed, skipped_protected, skipped_out_of_scope, regions_affected, created_at, finished_at";
+            + "blocks_planned, blocks_changed, skipped_protected, skipped_out_of_scope, regions_affected, created_at, finished_at, "
+            + "EXISTS (SELECT 1 FROM undo_journal j WHERE j.operation_id = operations.id)";
 
     private final Database database;
 
@@ -179,6 +180,35 @@ public final class EditStore {
         });
     }
 
+    /**
+     * Deletes the journal of up to {@code limit} finished operations that ended before the cutoff, each
+     * in its own transaction. Operations still planned or running are never touched. Call again until it
+     * returns 0; the database thread is free between calls.
+     */
+    public CompletableFuture<Integer> pruneJournals(long finishedBefore, int limit) {
+        return database.submit(c -> {
+            List<String> ids = new ArrayList<>();
+            try (PreparedStatement s = c.prepareStatement("SELECT id FROM operations "
+                    + "WHERE status IN ('done', 'failed', 'cancelled') AND finished_at < ? "
+                    + "AND EXISTS (SELECT 1 FROM undo_journal j WHERE j.operation_id = operations.id) LIMIT ?")) {
+                s.setLong(1, finishedBefore);
+                s.setInt(2, limit);
+                try (ResultSet r = s.executeQuery()) {
+                    while (r.next()) {
+                        ids.add(r.getString(1));
+                    }
+                }
+            }
+            for (String id : ids) {
+                try (PreparedStatement s = c.prepareStatement("DELETE FROM undo_journal WHERE operation_id = ?")) {
+                    s.setString(1, id);
+                    s.executeUpdate();
+                }
+            }
+            return ids.size();
+        });
+    }
+
     public CompletableFuture<Void> audit(String actorType, String actorId, String action, String target,
                                          String operationId, String result) {
         return audit(actorType, actorId, action, target, operationId, result, null);
@@ -210,6 +240,6 @@ public final class EditStore {
                 EditKind.valueOf(r.getString(4).toUpperCase(java.util.Locale.ROOT)), r.getString(5),
                 OperationStatus.valueOf(r.getString(6).toUpperCase(java.util.Locale.ROOT)), r.getString(7),
                 r.getString(8), r.getLong(9), r.getLong(10), r.getLong(11), r.getLong(12), r.getString(13),
-                r.getLong(14), finishedAt);
+                r.getLong(14), finishedAt, r.getBoolean(16));
     }
 }

@@ -21,6 +21,8 @@ status:
   database: "<gray>Database: <white><database>"
   regions: "<gray>Regions: <white><regions>"
   mcp: "<gray>MCP server: <white><mcp>"
+  auth-failures: "<gray>Failed MCP logins: <white><failures>"
+  auth-failures-none: "none since the server started"
 agent:
   usage: "<yellow>Usage: /<label> agent token <create|list|revoke|scope>"
   usage-create: "<yellow>Usage: /<label> agent token create <name> [days until it expires]"
@@ -130,6 +132,7 @@ edit:
     not-undoable: "<red>That operation does not change blocks, so there is nothing to undo."
     not-yours: "<red>That operation belongs to someone else."
     already-undone: "<red>That operation was already undone."
+    journal-expired: "<red>The undo journal of that operation was deleted after undo.retention-days, so it can no longer be undone."
     still-running: "<red>That operation is still running. Cancel it first with /sv cancel."
     world-gone: "<red>The world of that operation is not loaded."
     nothing-running: "<red>You have no edit running."

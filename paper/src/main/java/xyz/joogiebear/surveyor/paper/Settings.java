@@ -8,8 +8,8 @@ import xyz.joogiebear.surveyor.core.Limits;
 import xyz.joogiebear.surveyor.core.region.Flag;
 
 record Settings(boolean mcpEnabled, String mcpBind, int mcpPort, boolean allowRemote, int defaultRatePerMinute,
-                boolean requireReason, boolean logDryRuns, Limits limits, String storageFile,
-                Map<Flag, Boolean> defaults) {
+                boolean requireReason, boolean logDryRuns, int undoRetentionDays, int auditRetentionDays,
+                Limits limits, String storageFile, Map<Flag, Boolean> defaults) {
 
     static Settings load(JavaPlugin plugin) {
         YamlConfiguration yaml = ConfigFiles.load(plugin, "config.yml");
@@ -41,8 +41,13 @@ record Settings(boolean mcpEnabled, String mcpBind, int mcpPort, boolean allowRe
         if (rate < 1) {
             throw new IllegalArgumentException("agents.default-rate-limit-per-minute must be at least 1");
         }
+        int undoDays = yaml.getInt("undo.retention-days");
+        int auditDays = yaml.getInt("audit.retention-days");
+        if (undoDays < 0 || auditDays < 0) {
+            throw new IllegalArgumentException("undo.retention-days and audit.retention-days must be 0 (keep forever) or more");
+        }
         return new Settings(yaml.getBoolean("server.enabled"), yaml.getString("server.bind", "127.0.0.1"), port,
                 yaml.getBoolean("server.allow-remote"), rate, yaml.getBoolean("agents.require-reason"),
-                yaml.getBoolean("audit.log-dry-runs"), limits, file, Map.copyOf(defaults));
+                yaml.getBoolean("audit.log-dry-runs"), undoDays, auditDays, limits, file, Map.copyOf(defaults));
     }
 }

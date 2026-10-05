@@ -7,8 +7,10 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
+import xyz.joogiebear.surveyor.core.audit.EventCoalescer;
 import xyz.joogiebear.surveyor.core.region.Flag;
 import xyz.joogiebear.surveyor.core.region.FlagResolver;
+import xyz.joogiebear.surveyor.core.region.Region;
 import xyz.joogiebear.surveyor.paper.storage.RegionStore;
 
 /** Answers "may this happen here". Only reads memory, so it is safe on any region thread. */
@@ -17,10 +19,12 @@ final class Protection {
     static final String BYPASS = "surveyor.bypass.region";
 
     private static final long NOTICE_COOLDOWN_NANOS = 1_000_000_000L;
+    private static final long BYPASS_WINDOW_MILLIS = 60_000L;
 
     private final SurveyorPlugin plugin;
     private final RegionStore regions;
     private final Map<UUID, Long> lastNotice = new ConcurrentHashMap<>();
+    private final EventCoalescer bypasses = new EventCoalescer(BYPASS_WINDOW_MILLIS);
 
     Protection(SurveyorPlugin plugin, RegionStore regions) {
         this.plugin = plugin;
@@ -46,14 +50,32 @@ final class Protection {
         if (!player.hasPermission(BYPASS)) {
             return true;
         }
-        String target = where.getWorld().getName() + " " + where.getBlockX() + " " + where.getBlockY() + " "
-                + where.getBlockZ();
-        regions.audit("player", player.getUniqueId().toString(), "bypass." + flag.key(), target, "allowed")
-                .exceptionally(error -> {
-                    plugin.getLogger().warning("Could not write bypass audit row: " + error.getMessage());
-                    return null;
-                });
+        String world = where.getWorld().getName();
+        String regionNames = String.join(",", regions.snapshot()
+                .at(world, where.getBlockX(), where.getBlockY(), where.getBlockZ()).stream().map(Region::name).toList());
+        var key = new EventCoalescer.Key(player.getUniqueId().toString(), "bypass." + flag.key(), regionNames);
+        // A bypassing builder breaks blocks by the hundred; one row per window says the same thing.
+        if (bypasses.offer(key, System.currentTimeMillis())) {
+            writeBypass(key, world + " " + where.getBlockX() + " " + where.getBlockY() + " " + where.getBlockZ()
+                    + (regionNames.isEmpty() ? "" : " in " + regionNames));
+        }
         return false;
+    }
+
+    /** Writes the counts of bypass windows that have closed as one summary row each. */
+    void flushBypasses(boolean all) {
+        for (EventCoalescer.Suppressed more : bypasses.drain(System.currentTimeMillis(), all)) {
+            EventCoalescer.Key key = more.key();
+            writeBypass(key, (key.where().isEmpty() ? "no region" : key.where()) + ": " + more.count()
+                    + " more within " + BYPASS_WINDOW_MILLIS / 1000 + " s");
+        }
+    }
+
+    private void writeBypass(EventCoalescer.Key key, String target) {
+        regions.audit("player", key.actor(), key.action(), target, "allowed").exceptionally(error -> {
+            plugin.getLogger().warning("Could not write bypass audit row: " + error.getMessage());
+            return null;
+        });
     }
 
     void notifyDenied(Player player, Flag flag) {

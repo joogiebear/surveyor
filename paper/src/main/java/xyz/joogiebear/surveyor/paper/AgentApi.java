@@ -18,6 +18,7 @@ import xyz.joogiebear.surveyor.core.agent.ErrorCode;
 import xyz.joogiebear.surveyor.core.agent.RateLimiter;
 import xyz.joogiebear.surveyor.core.agent.TokenRegistry;
 import xyz.joogiebear.surveyor.core.agent.TokenSecrets;
+import xyz.joogiebear.surveyor.core.audit.AuthFailures;
 import xyz.joogiebear.surveyor.mcp.ArgumentValidator;
 import xyz.joogiebear.surveyor.mcp.Principal;
 import xyz.joogiebear.surveyor.mcp.ToolBackend;
@@ -58,6 +59,7 @@ final class AgentApi implements ToolBackend {
     private final SurveyorPlugin plugin;
     private final AgentStore store;
     private final TokenRegistry tokens = new TokenRegistry();
+    private final AuthFailures authFailures = new AuthFailures(TimeUnit.MINUTES.toMillis(1));
     private final RateLimiter<Long> limiter = new RateLimiter<>(System::nanoTime);
     private final Map<String, Pending> pending = new ConcurrentHashMap<>();
     private final AgentEdits edits;
@@ -113,17 +115,43 @@ final class AgentApi implements ToolBackend {
         return store.revoke(token.id(), revoked.revokedAt());
     }
 
+    AuthFailures authFailures() {
+        return authFailures;
+    }
+
+    @Override
+    public void missingCredentials() {
+        failed(AuthFailures.UNKNOWN);
+    }
+
     @Override
     public Auth authenticate(String secret) {
         AgentToken token = tokens.authenticate(secret);
         if (token == null) {
+            failed(AuthFailures.UNKNOWN);
             return new Auth(null, "That token is not valid.");
         }
         return switch (token.status(System.currentTimeMillis())) {
             case ACTIVE -> new Auth(new Principal(token.id(), token.name(), token.scope()), null);
-            case REVOKED -> new Auth(null, "That token has been revoked.");
-            case EXPIRED -> new Auth(null, "That token has expired.");
+            case REVOKED -> {
+                failed(token.prefix());
+                yield new Auth(null, "That token has been revoked.");
+            }
+            case EXPIRED -> {
+                failed(token.prefix());
+                yield new Auth(null, "That token has expired.");
+            }
         };
+    }
+
+    // Counted, not stored: anyone who can reach the port could otherwise grow the database or the log.
+    // A key is a real token's prefix or "unknown", never anything the caller typed.
+    private void failed(String key) {
+        long report = authFailures.record(key, System.currentTimeMillis());
+        if (report > 0) {
+            plugin.getLogger().warning(report + " failed MCP authentication(s) since the last warning (latest: " + key
+                    + "). Totals are in /sv status.");
+        }
     }
 
     @Override

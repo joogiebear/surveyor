@@ -38,3 +38,12 @@
   older than the plugin.
 - Fixed a region or selection whose size overflows a long being treated as small: block counts now
   saturate.
+- Hardening: `undo.retention-days` and `audit.retention-days` now work. Journals of finished
+  operations and old audit rows are deleted in small steps off the region threads, one minute after
+  start and every 6 hours; 0 keeps everything. Undoing an operation whose journal was deleted says so.
+- Bypass audit: repeated `bypass.build` / `bypass.interact` / `bypass.entry` events by one player in
+  one set of regions write one row per minute, plus a summary row with the count of the rest.
+- Failed MCP authentications are counted, not stored: `/sv status` shows totals per token prefix or
+  `unknown`, and the log gets at most one warning a minute.
+- Known gap, documented: chest, sign, spawner and banner contents are not copied or restored.
+- Fixed the 2026-07-28 `tools/list` and `server/discover` results missing `cacheScope` and `ttlMs`, which made the official MCP Python SDK reject the tool list. They are now `private` with a TTL of 0.

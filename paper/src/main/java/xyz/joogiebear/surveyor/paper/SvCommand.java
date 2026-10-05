@@ -94,6 +94,11 @@ final class SvCommand implements TabExecutor {
         sender.sendMessage(messages.get("status.database", unparsed("database", plugin.database().status())));
         sender.sendMessage(messages.get("status.regions", unparsed("regions", regions)));
         sender.sendMessage(messages.get("status.mcp", unparsed("mcp", mcp)));
+        var failures = plugin.agents().authFailures();
+        String failed = failures.total() == 0 ? messages.raw("status.auth-failures-none")
+                : failures.total() + " (" + String.join(", ", failures.entries().stream().limit(5)
+                        .map(entry -> entry.key() + ": " + entry.count()).toList()) + ")";
+        sender.sendMessage(messages.get("status.auth-failures", unparsed("failures", failed)));
     }
 
     @Override

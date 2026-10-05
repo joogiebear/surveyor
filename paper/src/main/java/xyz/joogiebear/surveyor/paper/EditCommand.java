@@ -222,6 +222,9 @@ final class EditCommand {
         if (operation.undoneBy() != null) {
             return "edit.error.already-undone";
         }
+        if (operation.blocksChanged() > 0 && !operation.hasJournal()) {
+            return "edit.error.journal-expired";
+        }
         if (operation.status() == OperationStatus.PLANNED || operation.status() == OperationStatus.RUNNING) {
             return "edit.error.still-running";
         }

@@ -26,6 +26,7 @@ public final class SurveyorPlugin extends JavaPlugin {
     private RegionStore regions;
     private EditService edits;
     private AgentApi agents;
+    private Protection protection;
     private McpHttpServer mcp;
     private volatile String mcpFailure;
     private boolean folia;
@@ -50,6 +51,7 @@ public final class SurveyorPlugin extends JavaPlugin {
         regions = new RegionStore(database);
         edits = new EditService(this, new EditStore(database));
         agents = new AgentApi(this, new AgentStore(database));
+        protection = new Protection(this, regions);
         Path file = getDataFolder().toPath().resolve(settings.storageFile());
         CompletableFuture<Integer> loaded = database.open(file)
                 .thenCompose(ignored -> {
@@ -62,6 +64,7 @@ public final class SurveyorPlugin extends JavaPlugin {
                                 + (error.getCause() != null ? error.getCause().getMessage() : error.getMessage()));
                     } else {
                         getLogger().info("Loaded " + count + " regions");
+                        new Maintenance(this, protection).start();
                         edits.recover().exceptionally(failure -> {
                             getLogger().severe("Could not check for interrupted edits: " + failure.getMessage());
                             return null;
@@ -78,7 +81,7 @@ public final class SurveyorPlugin extends JavaPlugin {
             getServer().getAsyncScheduler().runNow(this, task -> startMcp());
         });
 
-        getServer().getPluginManager().registerEvents(new ProtectionListener(new Protection(this, regions)), this);
+        getServer().getPluginManager().registerEvents(new ProtectionListener(protection), this);
         getServer().getPluginManager().registerEvents(new EditListener(this), this);
         getCommand("sv").setExecutor(new SvCommand(this));
         getLogger().info("Surveyor " + getPluginMeta().getVersion() + " enabled on "
@@ -92,6 +95,9 @@ public final class SurveyorPlugin extends JavaPlugin {
         }
         if (edits != null) {
             edits.shutdown();
+        }
+        if (protection != null) {
+            protection.flushBypasses(true);
         }
         if (database != null) {
             database.close();

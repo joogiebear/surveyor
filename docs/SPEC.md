@@ -1,7 +1,6 @@
 # Surveyor: v1 specification
 
-Status: draft from the kickoff interview. Everything under "Proposed" is a default the owner has
-not reviewed in detail. Update this file in the same change as any behavior change.
+Status: milestones 1-5 built; sections marked "proposed" are as built and accepted unless a note says otherwise. Update this file in the same change as any behavior change.
 
 ## 1. Overview
 
@@ -153,7 +152,10 @@ growth, vehicles, hanging entities, and non-player damage.
   is protected (including positions a `replace` would not have touched). For an agent token, its
   scope is checked first and positions outside it are skipped and counted in `skipped.outOfScope`
   (see 7.4). `surveyor.bypass.region` skips the checks and writes one `bypass.edit`
-  audit row per operation that would otherwise have been denied something.
+  audit row per operation that would otherwise have been denied something. For events (break, place,
+  click, entry) the first bypass of a player in a set of regions writes a row at once; the rest within
+  60 seconds are counted and written as one summary row (`<regions>: N more within 60 s`), so a
+  bypassing builder does not flood the log.
 - Undo journal: one `undo_journal` row per batch: a palette of block data strings plus one entry per
   changed block (x and z in the chunk, y, palette index), gzipped. `seq` is the batch number.
   `/sv undo [operationId]` replays the rows into the world in reverse order, through the same
@@ -315,7 +317,10 @@ or everyone, including on regions it created. It never has bypass.
   batches stay undoable) and then saves. If the save fails the token stays revoked until restart and the
   admin is told. Secrets are only ever shown in game: `/sv agent token create` refuses the console,
   because the console is written to the server log.
-- No remote binding in v1 (see Bind above; TLS itself is post-v1).
+- Failed authentication is counted, not stored: per token prefix of a real token, or `unknown`, in
+  memory. `/sv status` shows the totals and the log gets at most one warning a minute, so nobody who
+  can reach the port can grow the database or the log. Counts reset on restart.
+- No remote binding in v1 (see Bind above; TLS itself and per-token region membership are post-v1).
 
 ## 8. Configuration (proposed)
 
@@ -373,6 +378,13 @@ All writes happen off the region threads. Schema is versioned with forward-only 
 
 Undo journal writes for a batch are committed before that batch is applied to the world.
 
+Retention: `undo.retention-days` deletes the journal rows (not the operation row) of operations that
+are `done`, `failed` or `cancelled` and finished before the cutoff; `planned` and `running` are never
+touched. `audit.retention-days` deletes old `audit_log` rows. Both run on the database thread in
+steps of at most 1000 rows, a minute after start and every 6 hours; 0 keeps everything. An undo of
+an operation whose journal is gone is refused (`edit.error.journal-expired`, agents get `CONFLICT`).
+SQLite reuses freed pages but the file does not shrink.
+
 Migration 1 (`001_baseline.sql`) creates all the tables above. The runner owns `schema_version`.
 Migration 2 (`002_undo_marker.sql`) adds `operations.undone_by` and an index on
 `operations(actor_type, actor_id, created_at)`. Migration 3 (`003_agents.sql`) adds `operations.blocks_planned`, `skipped_protected`,
@@ -386,7 +398,7 @@ Migration 2 (`002_undo_marker.sql`) adds `operations.undone_by` and an index on
 2. Regions: model, spatial index, flags, member roles, protection listeners, `/sv region ...`.
 3. Editing: selection, wand, chunked Folia-safe executor, `set`/`replace`/`copy`/`paste`, undo.
 4. Agent interface: tokens, scope, rate limits, MCP server, tools, dry run, audit log.
-5. Hardening: load tests on a Folia test server, crash-recovery tests for the undo journal,
+5. Hardening (built; see CHANGELOG for what is still untested): load tests on a Folia test server, crash-recovery tests for the undo journal,
    docs, README, changelog, BuiltByBit packaging and product page (with AI disclosure line).
 
 ### v1 acceptance ("done means")
@@ -406,6 +418,8 @@ TLS, MySQL.
 
 ## 12. Open questions and checks before release
 
+0. BuiltByBit (item 3) is a blocker until read in full: its rules say "substantially AI generated
+   content (e.g vibe coding project generation) is forbidden". Surveyor is largely AI-written.
 1. Product name and trademark: "Surveyor" is a working choice. Search BuiltByBit, SpigotMC,
    Modrinth, GitHub, domains and trademark databases before committing to branding.
 2. Legal check on the clean-room approach and on factual comparison wording in marketing.

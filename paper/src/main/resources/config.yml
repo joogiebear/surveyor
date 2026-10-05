@@ -13,6 +13,7 @@ agents:
 storage:
   type: sqlite
   file: surveyor.db
+# Old undo journals and audit rows are deleted every 6 hours. 0 keeps everything.
 undo:
   retention-days: 14
 audit:

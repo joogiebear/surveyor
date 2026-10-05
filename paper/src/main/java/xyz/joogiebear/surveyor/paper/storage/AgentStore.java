@@ -144,6 +144,18 @@ public final class AgentStore {
         });
     }
 
+    /** Deletes up to {@code limit} audit rows older than the cutoff. Call again until it returns 0. */
+    public CompletableFuture<Integer> pruneAudit(long olderThanMillis, int limit) {
+        return database.submit(c -> {
+            try (PreparedStatement s = c.prepareStatement("DELETE FROM audit_log WHERE id IN "
+                    + "(SELECT id FROM audit_log WHERE at < ? ORDER BY id LIMIT ?)")) {
+                s.setLong(1, olderThanMillis);
+                s.setInt(2, limit);
+                return s.executeUpdate();
+            }
+        });
+    }
+
     /** Newest first. */
     public CompletableFuture<List<AuditRow>> audit(AuditFilter filter) {
         return database.submit(c -> {
