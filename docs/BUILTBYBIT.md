@@ -4,6 +4,9 @@ Do not publish before the open items in SPEC section 12 are closed. In particula
 say substantially AI-generated content (it names vibe-coded project generation) is forbidden; read the
 full rules and decide whether this product may be listed.
 
+## Price
+$14.99 (decided 2026-10-04). Paid, closed source, proprietary licence.
+
 ## Title
 Surveyor: Regions and World Editing for Players and AI Agents (Paper / Folia 26.2)
 
